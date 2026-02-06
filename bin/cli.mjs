@@ -38,6 +38,17 @@ import { fileURLToPath } from "node:url";
 const __filename = fileURLToPath(import.meta.url);
 const args = process.argv.slice(2);
 
+// ── ANSI escapes & column widths (must be before command routing) ──
+const E = {
+  R: "\x1b[0m", B: "\x1b[1m", D: "\x1b[90m",
+  RED: "\x1b[31m", GRN: "\x1b[32m", YEL: "\x1b[33m",
+  CYN: "\x1b[36m", ORG: "\x1b[38;5;208m",
+  BG: "\x1b[48;5;236m",
+  CLR: "\x1b[2J\x1b[H",
+  HIDE: "\x1b[?25l", SHOW: "\x1b[?25h",
+};
+const COL = { name: 24, bar: 20, tokens: 8, reqs: 7, cost: 10 };
+
 /** Inspector state directory for PID/log files. */
 const INSPECTOR_DIR = join(homedir(), ".openclaw", ".inspector-runtime");
 
@@ -59,6 +70,7 @@ function parseArgs(argv) {
     open: false,
     config: undefined,
     json: false,
+    live: false,
     days: 7,
     lines: 50,
     help: false,
@@ -76,6 +88,7 @@ function parseArgs(argv) {
     if (arg === "--open") { opts.open = true; continue; }
     if (arg === "--config" && argv[i + 1]) { opts.config = argv[++i]; continue; }
     if (arg === "--json") { opts.json = true; continue; }
+    if (arg === "--live" || arg === "-w") { opts.live = true; continue; }
     if (arg === "--days" && argv[i + 1]) { opts.days = parseInt(argv[++i], 10); continue; }
     if (arg === "--lines" && argv[i + 1]) { opts.lines = parseInt(argv[++i], 10); continue; }
     if (arg === "--help" || arg === "-h") { opts.help = true; continue; }
@@ -117,6 +130,7 @@ if (opts.help) {
     --open            Auto-open the dashboard in a browser
     --config <path>   Custom path to openclaw.json
     --json            Output as JSON (for stats, status, providers, history)
+    --live, -w        Live auto-refreshing stats (for stats command)
     --days <number>   Number of days to show in history (default: 7)
     --lines <number>  Number of log lines to show (default: 50)
     --help, -h        Show this help message
@@ -128,7 +142,8 @@ if (opts.help) {
     npx oc-inspector restart           # Restart daemon
     npx oc-inspector enable            # Enable interception
     npx oc-inspector disable           # Disable interception
-    npx oc-inspector stats             # Show live token stats
+    npx oc-inspector stats             # Show token stats
+    npx oc-inspector stats --live      # Live auto-refreshing dashboard
     npx oc-inspector stats --json      # Stats as JSON
     npx oc-inspector history --days 30 # Last 30 days
     npx oc-inspector pricing           # Show pricing table
@@ -522,6 +537,10 @@ async function runRemoteCommand(opts) {
   const base = `http://127.0.0.1:${opts.port}`;
 
   if (opts.command === "stats") {
+    if (opts.live) {
+      await runLiveStats(base);
+      return;
+    }
     const data = await fetchApi(`${base}/api/stats`);
     if (!data) return;
     if (opts.json) { console.log(JSON.stringify(data, null, 2)); return; }
@@ -588,7 +607,7 @@ function printCommandsHelp() {
   console.log(`    ${C}oc-inspector status${R}        Daemon + interception status`);
   console.log(`    ${C}oc-inspector enable${R}        Enable interception`);
   console.log(`    ${C}oc-inspector disable${R}       Disable interception`);
-  console.log(`    ${C}oc-inspector stats${R}         Live token/cost statistics`);
+  console.log(`    ${C}oc-inspector stats${R}         Token/cost statistics ${D}(--live for auto-refresh)${R}`);
   console.log(`    ${C}oc-inspector history${R}       Daily usage history`);
   console.log(`    ${C}oc-inspector pricing${R}       Model pricing table`);
   console.log(`    ${C}oc-inspector providers${R}     Active providers list`);
@@ -611,64 +630,214 @@ async function fetchApi(url) {
   }
 }
 
+// ── Formatting helpers ──
+
 function fmtNum(n) {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + "M";
   if (n >= 1_000) return (n / 1_000).toFixed(1) + "k";
   return String(n);
 }
 
+function fmtCost(n) {
+  if (!n || n === 0) return "$0.00";
+  if (n < 0.01) return "$" + n.toFixed(4);
+  return "$" + n.toFixed(2);
+}
+
+function fmtMs(ms) {
+  if (ms >= 60_000) return (ms / 60_000).toFixed(1) + "m";
+  if (ms >= 1_000) return (ms / 1_000).toFixed(1) + "s";
+  return ms + "ms";
+}
+
+/**
+ * Build a horizontal bar string.
+ *
+ * @param {number} val - Current value.
+ * @param {number} max - Maximum value (100%).
+ * @param {number} [width=20] - Bar width in characters.
+ * @returns {string} Bar characters.
+ */
+function bar(val, max, width = 20) {
+  const pct = max > 0 ? Math.min(val / max, 1) : 0;
+  const filled = Math.round(pct * width);
+  const empty = width - filled;
+  return "█".repeat(filled) + "░".repeat(empty);
+}
+
+/**
+ * Render stats data to an array of strings (no ANSI clears).
+ *
+ * @param {object} s - Stats from /api/stats.
+ * @param {object} [opts] - Render options.
+ * @param {boolean} [opts.compact=false] - Skip header/footer.
+ * @returns {string[]} Lines to print.
+ */
+function renderStats(s, { compact = false } = {}) {
+  const lines = [];
+  const w = COL;
+
+  if (!compact) {
+    lines.push("");
+    lines.push(`  ${E.ORG}🦞 OpenClaw Inspector — Stats${E.R}`);
+    lines.push("  " + "─".repeat(68));
+  }
+
+  // ── Summary box ──
+  lines.push("");
+  const errStr = s.errors > 0 ? `  ${E.RED}(${s.errors} errors)${E.R}` : "";
+  lines.push(`  ${E.B}Requests${E.R}     ${String(s.totalRequests).padStart(6)}${errStr}`);
+
+  const inTok = fmtNum(s.totalInputTokens);
+  const outTok = fmtNum(s.totalOutputTokens);
+  lines.push(`  ${E.B}Tokens${E.R}       ${fmtNum(s.totalTokens).padStart(6)}   ${E.D}in ${inTok}  out ${outTok}${E.R}`);
+
+  if (s.totalCachedTokens > 0) {
+    lines.push(`  ${E.B}Cached${E.R}       ${fmtNum(s.totalCachedTokens).padStart(6)}`);
+  }
+
+  lines.push(`  ${E.B}Cost${E.R}       ${E.GRN}${fmtCost(s.totalCost || 0).padStart(8)}${E.R}`);
+
+  if (s.totalDuration > 0 && s.totalRequests > 0) {
+    const avg = Math.round(s.totalDuration / s.totalRequests);
+    lines.push(`  ${E.B}Avg latency${E.R}  ${fmtMs(avg).padStart(6)}`);
+  }
+
+  // ── By Provider ──
+  const providers = Object.entries(s.byProvider || {});
+  if (providers.length > 0) {
+    lines.push("");
+    lines.push(`  ${E.B}${"Provider".padEnd(w.name)}  ${"Tokens".padStart(w.tokens)}  ${"Bar".padEnd(w.bar)}  ${"Reqs".padStart(w.reqs)}  ${"Cost".padStart(w.cost)}${E.R}`);
+    lines.push("  " + "─".repeat(68));
+
+    const maxT = Math.max(...providers.map(([, v]) => (v.inputTokens || 0) + (v.outputTokens || 0)));
+    const sorted = providers.sort((a, b) =>
+      (b[1].cost || 0) - (a[1].cost || 0) ||
+      ((b[1].inputTokens || 0) + (b[1].outputTokens || 0)) - ((a[1].inputTokens || 0) + (a[1].outputTokens || 0))
+    );
+
+    for (const [name, v] of sorted) {
+      const total = (v.inputTokens || 0) + (v.outputTokens || 0);
+      const n = name.length > w.name - 2 ? name.slice(0, w.name - 3) + "…" : name;
+      const costStr = v.cost > 0 ? `${E.GRN}${fmtCost(v.cost).padStart(w.cost)}${E.R}` : `${E.D}${fmtCost(0).padStart(w.cost)}${E.R}`;
+      lines.push(`  ${E.CYN}${n.padEnd(w.name)}${E.R}  ${fmtNum(total).padStart(w.tokens)}  ${bar(total, maxT, w.bar)}  ${String(v.requests).padStart(w.reqs)}  ${costStr}`);
+    }
+  }
+
+  // ── By Model ──
+  const models = Object.entries(s.byModel || {});
+  if (models.length > 0) {
+    lines.push("");
+    lines.push(`  ${E.B}${"Model".padEnd(w.name)}  ${"Tokens".padStart(w.tokens)}  ${"Bar".padEnd(w.bar)}  ${"Reqs".padStart(w.reqs)}  ${"Cost".padStart(w.cost)}${E.R}`);
+    lines.push("  " + "─".repeat(68));
+
+    const maxT = Math.max(...models.map(([, v]) => (v.inputTokens || 0) + (v.outputTokens || 0)));
+    const sorted = models.sort((a, b) =>
+      (b[1].cost || 0) - (a[1].cost || 0) ||
+      ((b[1].inputTokens || 0) + (b[1].outputTokens || 0)) - ((a[1].inputTokens || 0) + (a[1].outputTokens || 0))
+    );
+
+    for (const [name, v] of sorted) {
+      const total = (v.inputTokens || 0) + (v.outputTokens || 0);
+      const n = name.length > w.name - 2 ? name.slice(0, w.name - 3) + "…" : name;
+      const costStr = v.cost > 0 ? `${E.GRN}${fmtCost(v.cost).padStart(w.cost)}${E.R}` : `${E.D}${fmtCost(0).padStart(w.cost)}${E.R}`;
+      lines.push(`  ${E.YEL}${n.padEnd(w.name)}${E.R}  ${fmtNum(total).padStart(w.tokens)}  ${bar(total, maxT, w.bar)}  ${String(v.requests).padStart(w.reqs)}  ${costStr}`);
+    }
+  }
+
+  lines.push("");
+  return lines;
+}
+
 function printStats(s) {
-  const bar = (label, val, max, width = 24) => {
-    const pct = max > 0 ? Math.min(val / max, 1) : 0;
-    const filled = Math.round(pct * width);
-    const empty = width - filled;
-    return `${label}  ${"█".repeat(filled)}${"░".repeat(empty)}  ${fmtNum(val)}`;
+  for (const line of renderStats(s)) process.stdout.write(line + "\n");
+}
+
+/**
+ * Live auto-refreshing stats dashboard.
+ * Clears the terminal and redraws every 2 seconds.
+ * Press q or Ctrl+C to exit.
+ *
+ * @param {string} base - Inspector API base URL.
+ */
+async function runLiveStats(base) {
+  const url = `${base}/api/stats`;
+
+  // Enable raw mode for keypress detection
+  if (process.stdin.isTTY) {
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.setEncoding("utf8");
+  }
+
+  process.stdout.write(E.HIDE); // hide cursor
+
+  let running = true;
+  let tick = 0;
+
+  const cleanup = () => {
+    running = false;
+    process.stdout.write(E.SHOW); // show cursor
+    if (process.stdin.isTTY) process.stdin.setRawMode(false);
+    console.log("");
+    process.exit(0);
   };
 
-  console.log("");
-  console.log("  \x1b[38;5;208m🦞 OpenClaw Inspector — Stats\x1b[0m");
-  console.log("  " + "─".repeat(50));
-  console.log("");
+  process.on("SIGINT", cleanup);
+  process.on("SIGTERM", cleanup);
 
-  console.log(`  \x1b[1mRequests:\x1b[0m    ${s.totalRequests}${s.errors > 0 ? `  (\x1b[31m${s.errors} errors\x1b[0m)` : ""}`);
-  console.log(`  \x1b[1mTokens:\x1b[0m      ${fmtNum(s.totalTokens)} total  (in: ${fmtNum(s.totalInputTokens)}  out: ${fmtNum(s.totalOutputTokens)})`);
-  if (s.totalCachedTokens > 0) {
-    console.log(`  \x1b[1mCached:\x1b[0m      ${fmtNum(s.totalCachedTokens)}`);
-  }
-  console.log(`  \x1b[1mCost:\x1b[0m        \x1b[32m$${(s.totalCost || 0).toFixed(4)}\x1b[0m`);
-  if (s.totalDuration > 0) {
-    const avgMs = Math.round(s.totalDuration / s.totalRequests);
-    console.log(`  \x1b[1mAvg latency:\x1b[0m ${avgMs}ms`);
+  if (process.stdin.isTTY) {
+    process.stdin.on("data", (key) => {
+      if (key === "q" || key === "Q" || key === "\x03") cleanup(); // q or Ctrl+C
+    });
   }
 
-  const providers = Object.entries(s.byProvider);
-  if (providers.length > 0) {
-    console.log("");
-    console.log("  \x1b[1mBy Provider\x1b[0m");
-    console.log("  " + "─".repeat(50));
-    const maxTokens = Math.max(...providers.map(([, v]) => v.inputTokens + v.outputTokens));
-    for (const [name, v] of providers.sort((a, b) => (b[1].cost || 0) - (a[1].cost || 0) || (b[1].inputTokens + b[1].outputTokens) - (a[1].inputTokens + a[1].outputTokens))) {
-      const total = v.inputTokens + v.outputTokens;
-      const costStr = v.cost > 0 ? `  \x1b[32m$${v.cost.toFixed(4)}\x1b[0m` : "";
-      console.log(`  \x1b[36m${name.padEnd(18)}\x1b[0m ${bar("", total, maxTokens)}  (${v.requests} reqs)${costStr}`);
+  while (running) {
+    try {
+      const res = await fetch(url);
+      const data = await res.json();
+
+      const lines = [];
+      lines.push(E.CLR); // clear screen
+      lines.push(`  ${E.ORG}🦞 OpenClaw Inspector${E.R}  ${E.D}— Live Stats${E.R}`);
+      lines.push("  " + "═".repeat(68));
+
+      // Uptime spinner
+      const spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+      const sp = spinner[tick % spinner.length];
+      const now = new Date().toLocaleTimeString();
+      lines.push(`  ${E.GRN}${sp}${E.R} ${E.D}Updated ${now}   Press ${E.B}q${E.R}${E.D} to exit${E.R}`);
+
+      // Render stats body (compact, no header)
+      const body = renderStats(data, { compact: true });
+      lines.push(...body);
+
+      // Recently seen models (last 5 entries by model)
+      const recent = data.recentEntries || [];
+      if (recent.length > 0) {
+        lines.push(`  ${E.B}Recent Requests${E.R}`);
+        lines.push("  " + "─".repeat(68));
+        for (const e of recent.slice(0, 8)) {
+          const model = (e.model || "?").length > 22 ? (e.model || "?").slice(0, 21) + "…" : (e.model || "?");
+          const st = e.state === "done" ? `${E.GRN}✓${E.R}` : e.state === "error" ? `${E.RED}✗${E.R}` : `${E.YEL}…${E.R}`;
+          const dur = e.duration ? fmtMs(e.duration) : "—";
+          const tok = e.totalTokens ? fmtNum(e.totalTokens) : "—";
+          const cost = e.cost > 0 ? `${E.GRN}${fmtCost(e.cost)}${E.R}` : `${E.D}—${E.R}`;
+          lines.push(`  ${st} ${E.YEL}${model.padEnd(24)}${E.R} ${E.CYN}${(e.provider || "?").padEnd(12)}${E.R} ${tok.padStart(8)} tok  ${dur.padStart(6)}  ${cost}`);
+        }
+        lines.push("");
+      }
+
+      process.stdout.write(lines.join("\n") + "\n");
+    } catch {
+      process.stdout.write(E.CLR);
+      process.stdout.write(`\n  ${E.RED}✗ Cannot connect to inspector at ${base}${E.R}\n`);
+      process.stdout.write(`  ${E.D}Retrying...${E.R}\n`);
     }
-  }
 
-  const models = Object.entries(s.byModel);
-  if (models.length > 0) {
-    console.log("");
-    console.log("  \x1b[1mBy Model\x1b[0m");
-    console.log("  " + "─".repeat(50));
-    const maxTokens = Math.max(...models.map(([, v]) => v.inputTokens + v.outputTokens));
-    for (const [name, v] of models.sort((a, b) => (b[1].cost || 0) - (a[1].cost || 0) || (b[1].inputTokens + b[1].outputTokens) - (a[1].inputTokens + a[1].outputTokens))) {
-      const total = v.inputTokens + v.outputTokens;
-      const shortName = name.length > 28 ? name.slice(0, 27) + "…" : name;
-      const costStr = v.cost > 0 ? `  \x1b[32m$${v.cost.toFixed(4)}\x1b[0m` : "";
-      console.log(`  \x1b[33m${shortName.padEnd(30)}\x1b[0m ${bar("", total, maxTokens)}  (${v.requests} reqs)${costStr}`);
-    }
+    tick++;
+    await new Promise((r) => setTimeout(r, 2000));
   }
-
-  console.log("");
 }
 
 function printPricing(models) {

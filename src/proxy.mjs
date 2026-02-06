@@ -112,6 +112,24 @@ export function getStats() {
     }
   }
 
+  // Recent entries (last 10) for live view
+  const recentEntries = [];
+  const recentIds = entryOrder.slice(-10).reverse();
+  for (const id of recentIds) {
+    const e = entries.get(id);
+    if (!e) continue;
+    const u = e.usage || {};
+    recentEntries.push({
+      id: e.id,
+      provider: e.provider || "?",
+      model: u.model || e.reqModel || "?",
+      state: e.state,
+      duration: e.duration || 0,
+      totalTokens: (u.inputTokens || 0) + (u.outputTokens || 0),
+      cost: e.cost || 0,
+    });
+  }
+
   return {
     totalRequests,
     totalInputTokens,
@@ -123,6 +141,7 @@ export function getStats() {
     errors,
     byProvider,
     byModel,
+    recentEntries,
   };
 }
 
