@@ -1,0 +1,41 @@
+{
+  "name": "@kshidenko/openclaw-inspector",
+  "version": "1.0.0",
+  "description": "Real-time API traffic inspector for OpenClaw — intercepts LLM provider requests, shows token usage, costs, and message flow in a live web dashboard.",
+  "type": "module",
+  "bin": {
+    "openclaw-inspector": "./bin/cli.mjs"
+  },
+  "main": "./src/server.mjs",
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "README.md"
+  ],
+  "scripts": {
+    "start": "node bin/cli.mjs",
+    "dev": "node bin/cli.mjs --open"
+  },
+  "keywords": [
+    "openclaw",
+    "llm",
+    "inspector",
+    "proxy",
+    "anthropic",
+    "openai",
+    "token-usage",
+    "api-monitor"
+  ],
+  "author": "kshidenko",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kshidenko/openclaw-inspector"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

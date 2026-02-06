@@ -1,0 +1,207 @@
+/**
+ * Main HTTP server for OpenClaw Inspector.
+ *
+ * Combines the reverse proxy, WebSocket server, dashboard, and API endpoints
+ * into a single HTTP server instance.
+ *
+ * @module server
+ */
+
+import http from "node:http";
+import { renderDashboard } from "./dashboard.mjs";
+import { initProxy, handleProxy, updateTargets, clearEntries } from "./proxy.mjs";
+import { initWebSocket, broadcast } from "./ws.mjs";
+import { detect, readConfig, enable, disable, status } from "./config.mjs";
+import { buildTargetMap, BUILTIN_URLS } from "./providers.mjs";
+
+/**
+ * Start the inspector server.
+ *
+ * @param {object} options
+ * @param {number} options.port - Port to listen on (default 18800).
+ * @param {string} [options.configPath] - Custom path to openclaw.json.
+ * @param {boolean} [options.open] - Open browser on start.
+ * @returns {Promise<{ server: http.Server, url: string, openclawDir: string }>}
+ *
+ * Example:
+ *   >>> const { url } = await startServer({ port: 18800 });
+ *   >>> console.log("Inspector at", url);
+ */
+export async function startServer({ port = 18800, configPath, open = false }) {
+  // Detect OpenClaw
+  const oc = detect(configPath);
+  if (!oc.exists) {
+    console.error(`[inspector] OpenClaw config not found at ${oc.configPath}`);
+    console.error(`[inspector] Use --config to specify the path`);
+    process.exit(1);
+  }
+
+  // Build initial target map
+  let config;
+  try {
+    config = readConfig(oc.configPath);
+  } catch (err) {
+    console.error(`[inspector] Failed to read config: ${err.message}`);
+    process.exit(1);
+  }
+
+  // Check if interception was already enabled (from previous run)
+  let inspectorState = null;
+  try {
+    const statePath = joinPath(oc.dir, ".inspector-state.json");
+    if (existsFs(statePath)) {
+      inspectorState = JSON.parse(readFs(statePath, "utf-8"));
+    }
+  } catch { /* ignore */ }
+
+  const targets = buildTargetMap(oc.dir, config.models?.providers || {}, inspectorState);
+  console.log(`[inspector] Detected providers: ${[...targets.keys()].join(", ")}`);
+
+  // Initialize proxy
+  initProxy(targets, broadcast);
+
+  // Dashboard HTML
+  const dashboardHtml = renderDashboard(port);
+
+  // Create HTTP server
+  const server = http.createServer(async (req, res) => {
+    const url = req.url || "/";
+
+    // Dashboard
+    if (url === "/" || url === "/index.html") {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(dashboardHtml);
+      return;
+    }
+
+    // API: status
+    if (url === "/api/status" && req.method === "GET") {
+      const st = status(oc.dir);
+      jsonResponse(res, 200, { ...st, configPath: oc.configPath });
+      return;
+    }
+
+    // API: enable
+    if (url === "/api/enable" && req.method === "POST") {
+      try {
+        const result = enable({ configPath: oc.configPath, openclawDir: oc.dir, port });
+
+        // Rebuild target map from state (use originals as the real URLs)
+        refreshTargets(oc, port);
+
+        jsonResponse(res, 200, result);
+      } catch (err) {
+        jsonResponse(res, 500, { ok: false, message: err.message });
+      }
+      return;
+    }
+
+    // API: disable
+    if (url === "/api/disable" && req.method === "POST") {
+      try {
+        const result = disable({ configPath: oc.configPath, openclawDir: oc.dir });
+        jsonResponse(res, 200, result);
+      } catch (err) {
+        jsonResponse(res, 500, { ok: false, message: err.message });
+      }
+      return;
+    }
+
+    // API: clear entries
+    if (url === "/api/clear" && req.method === "POST") {
+      clearEntries();
+      jsonResponse(res, 200, { ok: true });
+      return;
+    }
+
+    // API: providers (current target map)
+    if (url === "/api/providers" && req.method === "GET") {
+      const list = [];
+      for (const [name, targetUrl] of targets) {
+        list.push({ name, url: targetUrl });
+      }
+      jsonResponse(res, 200, { providers: list });
+      return;
+    }
+
+    // Proxy: /{provider}/{path}
+    const firstSlash = url.indexOf("/", 1);
+    const providerName = firstSlash > 0 ? url.slice(1, firstSlash) : url.slice(1);
+    if (targets.has(providerName)) {
+      await handleProxy(req, res);
+      return;
+    }
+
+    // 404
+    res.writeHead(404, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "Not found" }));
+  });
+
+  // Attach WebSocket
+  initWebSocket(server);
+
+  // Start listening
+  await new Promise((resolve, reject) => {
+    server.on("error", (err) => {
+      if (err.code === "EADDRINUSE") {
+        console.error(`[inspector] Port ${port} is already in use`);
+        console.error(`[inspector] Kill the existing process: lsof -ti :${port} | xargs kill -9`);
+      }
+      reject(err);
+    });
+    server.listen(port, "127.0.0.1", resolve);
+  });
+
+  const url = `http://127.0.0.1:${port}`;
+
+  // Auto-open browser
+  if (open) {
+    const { exec } = await import("node:child_process");
+    const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
+    exec(`${cmd} ${url}`);
+  }
+
+  return { server, url, openclawDir: oc.dir };
+}
+
+/**
+ * Refresh the proxy target map after enable/disable.
+ *
+ * After enabling, the config has proxy URLs — we need to use the ORIGINAL
+ * upstream URLs from the inspector state file.
+ *
+ * @param {object} oc - OpenClaw detection result.
+ * @param {number} port - Inspector port.
+ */
+import { readFileSync as readFs, existsSync as existsFs } from "node:fs";
+import { join as joinPath } from "node:path";
+
+function refreshTargets(oc, port) {
+  try {
+    const statePath = joinPath(oc.dir, ".inspector-state.json");
+
+    if (existsFs(statePath)) {
+      const state = JSON.parse(readFs(statePath, "utf-8"));
+      const newTargets = new Map();
+      for (const [name, orig] of Object.entries(state.originals || {})) {
+        newTargets.set(name, orig.baseUrl);
+      }
+      updateTargets(newTargets);
+      console.log(`[inspector] Targets refreshed: ${[...newTargets.keys()].join(", ")}`);
+    }
+  } catch {
+    // Non-critical
+  }
+}
+
+/**
+ * Send a JSON response.
+ *
+ * @param {http.ServerResponse} res
+ * @param {number} statusCode
+ * @param {object} data
+ */
+function jsonResponse(res, statusCode, data) {
+  res.writeHead(statusCode, { "content-type": "application/json" });
+  res.end(JSON.stringify(data));
+}
