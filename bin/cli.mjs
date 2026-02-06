@@ -26,8 +26,8 @@ const args = process.argv.slice(2);
 
 /** Simple arg parser. */
 function parseArgs(argv) {
-  const opts = { command: "start", port: 18800, open: false, config: undefined, json: false, help: false };
-  const commands = new Set(["start", "enable", "disable", "status", "stats", "providers"]);
+  const opts = { command: "start", port: 18800, open: false, config: undefined, json: false, days: 7, help: false };
+  const commands = new Set(["start", "enable", "disable", "status", "stats", "providers", "history"]);
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (commands.has(arg) && i === 0) { opts.command = arg; continue; }
@@ -35,6 +35,7 @@ function parseArgs(argv) {
     if (arg === "--open") { opts.open = true; continue; }
     if (arg === "--config" && argv[i + 1]) { opts.config = argv[++i]; continue; }
     if (arg === "--json") { opts.json = true; continue; }
+    if (arg === "--days" && argv[i + 1]) { opts.days = parseInt(argv[++i], 10); continue; }
     if (arg === "--help" || arg === "-h") { opts.help = true; continue; }
     // First non-flag arg is command
     if (!arg.startsWith("-") && !opts._cmdSet) { opts.command = arg; opts._cmdSet = true; }
@@ -57,13 +58,15 @@ if (opts.help) {
     disable           Disable interception (restores config)
     status            Show current interception status
     stats             Show token usage statistics from running inspector
+    history           Show daily usage history (persisted across restarts)
     providers         List detected providers and target URLs
 
   \x1b[1mOptions:\x1b[0m
     --port <number>   Port for the inspector proxy (default: 18800)
     --open            Auto-open the dashboard in a browser
     --config <path>   Custom path to openclaw.json
-    --json            Output as JSON (for stats, status, providers)
+    --json            Output as JSON (for stats, status, providers, history)
+    --days <number>   Number of days to show in history (default: 7)
     --help, -h        Show this help message
 
   \x1b[1mExamples:\x1b[0m
@@ -73,12 +76,14 @@ if (opts.help) {
     npx oc-inspector disable           # Disable interception
     npx oc-inspector stats             # Show live token stats
     npx oc-inspector stats --json      # Stats as JSON
+    npx oc-inspector history           # Daily history (last 7 days)
+    npx oc-inspector history --days 30 # Last 30 days
 `);
   process.exit(0);
 }
 
 // ── Remote commands: talk to a running inspector ──
-const remoteCommands = new Set(["stats", "providers"]);
+const remoteCommands = new Set(["stats", "providers", "history"]);
 if (remoteCommands.has(opts.command)) {
   await runRemoteCommand(opts);
   process.exit(0);
@@ -200,6 +205,14 @@ async function runRemoteCommand(opts) {
     console.log("");
     return;
   }
+
+  if (opts.command === "history") {
+    const data = await fetchApi(`${base}/api/history?days=${opts.days}`);
+    if (!data) return;
+    if (opts.json) { console.log(JSON.stringify(data, null, 2)); return; }
+    printHistory(data.days || []);
+    return;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -274,6 +287,79 @@ function printStats(s) {
       const shortName = name.length > 28 ? name.slice(0, 27) + "…" : name;
       const costStr = v.cost > 0 ? `  \x1b[32m$${v.cost.toFixed(4)}\x1b[0m` : "";
       console.log(`  \x1b[33m${shortName.padEnd(30)}\x1b[0m ${bar("", total, maxTokens)}  (${v.requests} reqs)${costStr}`);
+    }
+  }
+
+  console.log("");
+}
+
+function printHistory(days) {
+  console.log("");
+  console.log("  \x1b[38;5;208m🦞 OpenClaw Inspector — History\x1b[0m");
+  console.log("  " + "═".repeat(64));
+
+  if (!days.length) {
+    console.log("\n  \x1b[90mNo history data yet.\x1b[0m\n");
+    return;
+  }
+
+  // Summary table
+  console.log("");
+  console.log("  \x1b[1m  Date          Reqs    Input      Output     Cached     Cost\x1b[0m");
+  console.log("  " + "─".repeat(64));
+
+  let grandReqs = 0, grandIn = 0, grandOut = 0, grandCached = 0, grandCost = 0;
+
+  for (const d of days) {
+    const reqs = String(d.totalRequests).padStart(5);
+    const inp = fmtNum(d.totalInputTokens).padStart(8);
+    const out = fmtNum(d.totalOutputTokens).padStart(8);
+    const cached = fmtNum(d.totalCachedTokens).padStart(8);
+    const cost = ("$" + (d.totalCost || 0).toFixed(4)).padStart(9);
+    const isToday = d.date === new Date().toISOString().slice(0, 10);
+    const dateStr = isToday ? `\x1b[1m${d.date}\x1b[0m \x1b[33m⬤\x1b[0m` : `${d.date}  `;
+    console.log(`  ${dateStr} ${reqs}  ${inp}  ${out}  ${cached}  \x1b[32m${cost}\x1b[0m`);
+
+    grandReqs += d.totalRequests;
+    grandIn += d.totalInputTokens;
+    grandOut += d.totalOutputTokens;
+    grandCached += d.totalCachedTokens;
+    grandCost += d.totalCost || 0;
+  }
+
+  console.log("  " + "─".repeat(64));
+  const tReqs = String(grandReqs).padStart(5);
+  const tIn = fmtNum(grandIn).padStart(8);
+  const tOut = fmtNum(grandOut).padStart(8);
+  const tCached = fmtNum(grandCached).padStart(8);
+  const tCost = ("$" + grandCost.toFixed(4)).padStart(9);
+  console.log(`  \x1b[1m  TOTAL        ${tReqs}  ${tIn}  ${tOut}  ${tCached}  \x1b[32m${tCost}\x1b[0m\x1b[0m`);
+
+  // Per-model breakdown across all days
+  const modelTotals = {};
+  for (const d of days) {
+    for (const [name, v] of Object.entries(d.byModel || {})) {
+      if (!modelTotals[name]) modelTotals[name] = { requests: 0, inputTokens: 0, outputTokens: 0, cost: 0, provider: v.provider };
+      modelTotals[name].requests += v.requests;
+      modelTotals[name].inputTokens += v.inputTokens;
+      modelTotals[name].outputTokens += v.outputTokens;
+      modelTotals[name].cost += v.cost || 0;
+    }
+  }
+  const models = Object.entries(modelTotals);
+  if (models.length > 0) {
+    console.log("");
+    console.log("  \x1b[1mModel Totals (all days)\x1b[0m");
+    console.log("  " + "─".repeat(64));
+    const maxCost = Math.max(...models.map(([, v]) => v.cost));
+    for (const [name, v] of models.sort((a, b) => b[1].cost - a[1].cost)) {
+      const shortName = name.length > 28 ? name.slice(0, 27) + "…" : name;
+      const pct = maxCost > 0 ? Math.min(v.cost / maxCost, 1) : 0;
+      const filled = Math.round(pct * 16);
+      const empty = 16 - filled;
+      const bar = "█".repeat(filled) + "░".repeat(empty);
+      const costStr = v.cost > 0 ? `$${v.cost.toFixed(4)}` : "$0";
+      console.log(`  \x1b[33m${shortName.padEnd(30)}\x1b[0m ${bar}  \x1b[32m${costStr.padStart(9)}\x1b[0m  (${v.requests} reqs)`);
     }
   }
 

@@ -121,6 +121,24 @@ pre.json{background:#161b22;padding:10px;border-radius:4px;overflow-x:auto;white
 .conn{font-size:11px;display:flex;align-items:center;gap:4px}
 .conn-dot{width:6px;height:6px;border-radius:50%;background:#484f58}
 .conn-dot.connected{background:#3fb950}
+
+/* History panel */
+.history-panel{display:none;padding:16px;background:#0d1117}
+.history-panel.visible{display:block}
+.history-chart{display:flex;align-items:flex-end;gap:3px;height:120px;padding:8px 0;border-bottom:1px solid #21262d}
+.history-bar-group{display:flex;flex-direction:column;align-items:center;flex:1;min-width:24px}
+.history-bar{width:100%;border-radius:2px 2px 0 0;min-height:1px;transition:height .3s}
+.history-label{font-size:9px;color:#484f58;margin-top:4px;text-align:center}
+.history-table{width:100%;border-collapse:collapse;margin-top:12px;font-size:12px}
+.history-table th{text-align:left;color:#8b949e;font-weight:600;padding:6px 8px;border-bottom:1px solid #30363d}
+.history-table td{padding:6px 8px;border-bottom:1px solid #21262d}
+.history-table tr:hover td{background:#161b22}
+.history-table .num{text-align:right;font-variant-numeric:tabular-nums}
+.history-table .cost{color:#3fb950;font-weight:600}
+.history-table .today{color:#f78166;font-weight:600}
+.hist-toggle{cursor:pointer;padding:5px 12px;border-radius:6px;border:1px solid #30363d;background:#21262d;color:#c9d1d9;font-size:12px;font-family:inherit}
+.hist-toggle:hover{background:#30363d}
+.hist-toggle.active{border-color:#f78166;color:#f78166}
 </style>
 </head>
 <body>
@@ -138,7 +156,25 @@ pre.json{background:#161b22;padding:10px;border-radius:4px;overflow-x:auto;white
     <button class="btn primary" id="btnEnable" disabled>Enable</button>
     <button class="btn danger" id="btnDisable" disabled>Disable</button>
     <button class="btn" id="btnClear">Clear</button>
+    <button class="hist-toggle" id="btnHistory" onclick="toggleHistory()">History</button>
   </div>
+</div>
+<div class="history-panel" id="historyPanel">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+    <h3 style="color:#f0f6fc;font-size:14px">📊 Daily Usage History</h3>
+    <div style="display:flex;gap:6px">
+      <button class="btn" onclick="loadHistory(7)" id="hb7">7d</button>
+      <button class="btn" onclick="loadHistory(14)" id="hb14">14d</button>
+      <button class="btn" onclick="loadHistory(30)" id="hb30">30d</button>
+    </div>
+  </div>
+  <div class="history-chart" id="histChart"></div>
+  <table class="history-table">
+    <thead><tr><th>Date</th><th class="num">Requests</th><th class="num">Input</th><th class="num">Output</th><th class="num">Cached</th><th class="num">Cost</th></tr></thead>
+    <tbody id="histBody"></tbody>
+    <tfoot id="histFoot"></tfoot>
+  </table>
+  <div id="histModels" style="margin-top:16px"></div>
 </div>
 <div class="entries" id="entries">
   <div class="empty" id="emptyState">
@@ -623,6 +659,119 @@ document.getElementById('btnClear').onclick = () => {
   totalReqs = 0; totalTokens = 0; totalCost = 0;
   updateStats();
 };
+
+/* ── History ── */
+let historyVisible = false;
+
+function toggleHistory() {
+  historyVisible = !historyVisible;
+  const panel = document.getElementById('historyPanel');
+  const btn = document.getElementById('btnHistory');
+  panel.classList.toggle('visible', historyVisible);
+  btn.classList.toggle('active', historyVisible);
+  if (historyVisible) loadHistory(7);
+}
+
+async function loadHistory(days) {
+  // Highlight active button
+  ['hb7','hb14','hb30'].forEach(id => document.getElementById(id)?.classList.remove('primary'));
+  const btnId = 'hb' + days;
+  document.getElementById(btnId)?.classList.add('primary');
+
+  try {
+    const res = await fetch('/api/history?days=' + days);
+    const data = await res.json();
+    renderHistory(data.days || []);
+  } catch { /* ignore */ }
+}
+
+function renderHistory(days) {
+  const today = new Date().toISOString().slice(0, 10);
+
+  // Chart — bar chart by cost per day
+  const chart = document.getElementById('histChart');
+  if (!days.length) {
+    chart.innerHTML = '<p style="color:#484f58;margin:auto">No history data</p>';
+    document.getElementById('histBody').innerHTML = '';
+    document.getElementById('histFoot').innerHTML = '';
+    document.getElementById('histModels').innerHTML = '';
+    return;
+  }
+
+  const reversed = [...days].reverse(); // oldest first for chart
+  const maxCost = Math.max(...reversed.map(d => d.totalCost || 0), 0.0001);
+  const maxReqs = Math.max(...reversed.map(d => d.totalRequests || 0), 1);
+
+  chart.innerHTML = reversed.map(d => {
+    const costH = Math.max(2, ((d.totalCost || 0) / maxCost) * 100);
+    const isToday = d.date === today;
+    const dateLabel = d.date.slice(5); // MM-DD
+    const color = isToday ? '#f78166' : '#3fb950';
+    return '<div class="history-bar-group" title="' + d.date + '\\n$' + (d.totalCost||0).toFixed(4) + '\\n' + d.totalRequests + ' reqs">'
+      + '<div class="history-bar" style="height:' + costH + '%;background:' + color + '"></div>'
+      + '<div class="history-label">' + dateLabel + '</div>'
+      + '</div>';
+  }).join('');
+
+  // Table
+  let grandReqs = 0, grandIn = 0, grandOut = 0, grandCached = 0, grandCost = 0;
+  const rows = days.map(d => {
+    grandReqs += d.totalRequests;
+    grandIn += d.totalInputTokens;
+    grandOut += d.totalOutputTokens;
+    grandCached += d.totalCachedTokens;
+    grandCost += d.totalCost || 0;
+    const isToday = d.date === today;
+    const cls = isToday ? ' class="today"' : '';
+    return '<tr>'
+      + '<td' + cls + '>' + d.date + (isToday ? ' ●' : '') + '</td>'
+      + '<td class="num">' + d.totalRequests + '</td>'
+      + '<td class="num">' + fmtTokens(d.totalInputTokens) + '</td>'
+      + '<td class="num">' + fmtTokens(d.totalOutputTokens) + '</td>'
+      + '<td class="num">' + fmtTokens(d.totalCachedTokens) + '</td>'
+      + '<td class="num cost">$' + (d.totalCost||0).toFixed(4) + '</td>'
+      + '</tr>';
+  }).join('');
+  document.getElementById('histBody').innerHTML = rows;
+  document.getElementById('histFoot').innerHTML = '<tr style="font-weight:600">'
+    + '<td>Total</td>'
+    + '<td class="num">' + grandReqs + '</td>'
+    + '<td class="num">' + fmtTokens(grandIn) + '</td>'
+    + '<td class="num">' + fmtTokens(grandOut) + '</td>'
+    + '<td class="num">' + fmtTokens(grandCached) + '</td>'
+    + '<td class="num cost">$' + grandCost.toFixed(4) + '</td>'
+    + '</tr>';
+
+  // Model breakdown
+  const modelTotals = {};
+  for (const d of days) {
+    for (const [name, v] of Object.entries(d.byModel || {})) {
+      if (!modelTotals[name]) modelTotals[name] = { requests: 0, inputTokens: 0, outputTokens: 0, cost: 0, provider: v.provider };
+      modelTotals[name].requests += v.requests;
+      modelTotals[name].inputTokens += v.inputTokens;
+      modelTotals[name].outputTokens += v.outputTokens;
+      modelTotals[name].cost += v.cost || 0;
+    }
+  }
+  const models = Object.entries(modelTotals).sort((a, b) => b[1].cost - a[1].cost);
+  if (models.length) {
+    const maxModelCost = Math.max(...models.map(([,v]) => v.cost), 0.0001);
+    let html = '<h4 style="color:#8b949e;margin-bottom:8px">Model Breakdown</h4>';
+    for (const [name, v] of models) {
+      const pct = Math.max(2, (v.cost / maxModelCost) * 100);
+      const shortName = name.length > 32 ? name.slice(0,31) + '…' : name;
+      html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">'
+        + '<span style="width:200px;color:#79c0ff;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(shortName) + '</span>'
+        + '<div style="flex:1;height:14px;background:#21262d;border-radius:2px;overflow:hidden">'
+        + '<div style="width:' + pct + '%;height:100%;background:#3fb950;border-radius:2px"></div>'
+        + '</div>'
+        + '<span style="width:70px;text-align:right;color:#3fb950;font-size:12px;font-weight:600">$' + v.cost.toFixed(4) + '</span>'
+        + '<span style="width:50px;text-align:right;color:#8b949e;font-size:11px">' + v.requests + ' reqs</span>'
+        + '</div>';
+    }
+    document.getElementById('histModels').innerHTML = html;
+  }
+}
 
 /* ── Init ── */
 connect();

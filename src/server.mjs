@@ -15,6 +15,7 @@ import { initWebSocket, broadcast } from "./ws.mjs";
 import { detect, readConfig, enable, disable, status } from "./config.mjs";
 import { buildTargetMap, BUILTIN_URLS } from "./providers.mjs";
 import { initPricing } from "./pricing.mjs";
+import { initHistory, getRecent, getDay, listDates } from "./history.mjs";
 
 /**
  * Start the inspector server.
@@ -59,8 +60,9 @@ export async function startServer({ port = 18800, configPath, open = false }) {
   const targets = buildTargetMap(oc.dir, config.models?.providers || {}, inspectorState);
   console.log(`[inspector] Detected providers: ${[...targets.keys()].join(", ")}`);
 
-  // Initialize pricing from config
+  // Initialize pricing and history
   initPricing(config);
+  initHistory(oc.dir);
 
   // Initialize proxy
   initProxy(targets, broadcast);
@@ -115,6 +117,23 @@ export async function startServer({ port = 18800, configPath, open = false }) {
     // API: stats
     if (url === "/api/stats" && req.method === "GET") {
       jsonResponse(res, 200, getStats());
+      return;
+    }
+
+    // API: history
+    if (url.startsWith("/api/history") && req.method === "GET") {
+      const parts = url.split("/");
+      if (parts.length === 4 && parts[3]) {
+        // /api/history/2026-02-06
+        const date = parts[3].split("?")[0];
+        const day = getDay(date);
+        jsonResponse(res, 200, day ? { date, ...day } : { error: "No data for this date" });
+      } else {
+        // /api/history?days=N
+        const params = new URL(url, "http://localhost").searchParams;
+        const days = parseInt(params.get("days") || "30", 10);
+        jsonResponse(res, 200, { days: getRecent(days), dates: listDates() });
+      }
       return;
     }
 

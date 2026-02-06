@@ -18,6 +18,7 @@ import {
   accumulateStreamUsage,
 } from "./usage-parsers.mjs";
 import { calculateCost } from "./pricing.mjs";
+import { recordRequest } from "./history.mjs";
 
 /** Maximum entries kept in the circular buffer. */
 const MAX_ENTRIES = 500;
@@ -373,6 +374,7 @@ function handleSSE(proxyRes, res, entry, provider) {
     entry.cost = calculateCost(entry.usage?.model || entry.reqModel, entry.usage);
 
     broadcastFn?.("update", entrySummary(entry));
+    recordRequest(entry);
   });
 
   proxyRes.on("error", (err) => {
@@ -418,6 +420,7 @@ function handleBuffered(proxyRes, res, entry, provider) {
     }
 
     broadcastFn?.("update", entrySummary(entry));
+    recordRequest(entry);
   });
 
   proxyRes.on("error", (err) => {
@@ -425,6 +428,7 @@ function handleBuffered(proxyRes, res, entry, provider) {
     entry.error = err.message;
     entry.duration = Date.now() - entry.timestamp;
     broadcastFn?.("update", entrySummary(entry));
+    recordRequest(entry);
     res.end();
   });
 }
