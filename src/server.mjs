@@ -14,7 +14,7 @@ import { initProxy, handleProxy, updateTargets, clearEntries, getStats } from ".
 import { initWebSocket, broadcast } from "./ws.mjs";
 import { detect, readConfig, enable, disable, status } from "./config.mjs";
 import { buildTargetMap, BUILTIN_URLS } from "./providers.mjs";
-import { initPricing } from "./pricing.mjs";
+import { initPricing, getAllPricing, getInspectorConfig } from "./pricing.mjs";
 import { initHistory, getRecent, getDay, listDates } from "./history.mjs";
 
 /**
@@ -61,7 +61,7 @@ export async function startServer({ port = 18800, configPath, open = false }) {
   console.log(`[inspector] Detected providers: ${[...targets.keys()].join(", ")}`);
 
   // Initialize pricing and history
-  initPricing(config);
+  initPricing(config, oc.dir);
   initHistory(oc.dir);
 
   // Initialize proxy
@@ -134,6 +134,19 @@ export async function startServer({ port = 18800, configPath, open = false }) {
         const days = parseInt(params.get("days") || "30", 10);
         jsonResponse(res, 200, { days: getRecent(days), dates: listDates() });
       }
+      return;
+    }
+
+    // API: pricing
+    if (url === "/api/pricing" && req.method === "GET") {
+      jsonResponse(res, 200, { models: getAllPricing() });
+      return;
+    }
+
+    // API: inspector config
+    if (url === "/api/config" && req.method === "GET") {
+      const inspCfg = getInspectorConfig();
+      jsonResponse(res, 200, { config: inspCfg, configPath: joinPath(oc.dir, ".inspector.json") });
       return;
     }
 

@@ -13,6 +13,8 @@
  *   status            Show interception status
  *   stats             Show token usage statistics
  *   providers         List detected providers
+ *   pricing           Show model pricing table (built-in + custom)
+ *   config            Show path and contents of .inspector.json
  *
  * Options:
  *   --port <number>   Port for the inspector proxy (default: 18800)
@@ -27,7 +29,7 @@ const args = process.argv.slice(2);
 /** Simple arg parser. */
 function parseArgs(argv) {
   const opts = { command: "start", port: 18800, open: false, config: undefined, json: false, days: 7, help: false };
-  const commands = new Set(["start", "enable", "disable", "status", "stats", "providers", "history"]);
+  const commands = new Set(["start", "enable", "disable", "status", "stats", "providers", "history", "pricing", "config"]);
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (commands.has(arg) && i === 0) { opts.command = arg; continue; }
@@ -60,6 +62,8 @@ if (opts.help) {
     stats             Show token usage statistics from running inspector
     history           Show daily usage history (persisted across restarts)
     providers         List detected providers and target URLs
+    pricing           Show model pricing table (built-in + custom overrides)
+    config            Show .inspector.json path and status
 
   \x1b[1mOptions:\x1b[0m
     --port <number>   Port for the inspector proxy (default: 18800)
@@ -78,12 +82,14 @@ if (opts.help) {
     npx oc-inspector stats --json      # Stats as JSON
     npx oc-inspector history           # Daily history (last 7 days)
     npx oc-inspector history --days 30 # Last 30 days
+    npx oc-inspector pricing           # Show pricing table
+    npx oc-inspector config            # Show config file path
 `);
   process.exit(0);
 }
 
 // ── Remote commands: talk to a running inspector ──
-const remoteCommands = new Set(["stats", "providers", "history"]);
+const remoteCommands = new Set(["stats", "providers", "history", "pricing", "config"]);
 if (remoteCommands.has(opts.command)) {
   await runRemoteCommand(opts);
   process.exit(0);
@@ -213,6 +219,22 @@ async function runRemoteCommand(opts) {
     printHistory(data.days || []);
     return;
   }
+
+  if (opts.command === "pricing") {
+    const data = await fetchApi(`${base}/api/pricing`);
+    if (!data) return;
+    if (opts.json) { console.log(JSON.stringify(data, null, 2)); return; }
+    printPricing(data.models || []);
+    return;
+  }
+
+  if (opts.command === "config") {
+    const data = await fetchApi(`${base}/api/config`);
+    if (!data) return;
+    if (opts.json) { console.log(JSON.stringify(data, null, 2)); return; }
+    printConfig(data);
+    return;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -290,6 +312,67 @@ function printStats(s) {
     }
   }
 
+  console.log("");
+}
+
+function printPricing(models) {
+  console.log("");
+  console.log("  \x1b[38;5;208m🦞 OpenClaw Inspector — Pricing\x1b[0m");
+  console.log("  " + "═".repeat(76));
+  console.log("");
+  console.log(`  \x1b[1m${"Model".padEnd(36)}  ${"Input".padStart(8)}  ${"Output".padStart(8)}  ${"Cache R".padStart(8)}  ${"Cache W".padStart(8)}\x1b[0m`);
+  console.log("  " + "─".repeat(76));
+
+  // Group by provider prefix
+  const sorted = [...models].sort((a, b) => a.model.localeCompare(b.model));
+  let lastPrefix = "";
+  for (const m of sorted) {
+    const prefix = m.model.split("-")[0];
+    if (prefix !== lastPrefix && lastPrefix !== "") {
+      console.log("  " + "·".repeat(76));
+    }
+    lastPrefix = prefix;
+
+    const name = m.model.length > 34 ? m.model.slice(0, 33) + "…" : m.model;
+    const inp = m.input > 0 ? ("$" + m.input.toFixed(2)).padStart(8) : "\x1b[90m     —  \x1b[0m";
+    const out = m.output > 0 ? ("$" + m.output.toFixed(2)).padStart(8) : "\x1b[90m     —  \x1b[0m";
+    const cr = m.cacheRead > 0 ? ("$" + m.cacheRead.toFixed(2)).padStart(8) : "\x1b[90m     —  \x1b[0m";
+    const cw = m.cacheWrite > 0 ? ("$" + m.cacheWrite.toFixed(2)).padStart(8) : "\x1b[90m     —  \x1b[0m";
+    console.log(`  \x1b[33m${name.padEnd(36)}\x1b[0m  ${inp}  ${out}  ${cr}  ${cw}`);
+  }
+
+  console.log("");
+  console.log(`  \x1b[90mPrices are per 1M tokens (USD). Override in ~/.openclaw/.inspector.json\x1b[0m`);
+  console.log("");
+}
+
+function printConfig(data) {
+  console.log("");
+  console.log("  \x1b[38;5;208m🦞 OpenClaw Inspector — Config\x1b[0m");
+  console.log("  " + "═".repeat(56));
+  console.log("");
+  console.log(`  \x1b[1mConfig file:\x1b[0m  ${data.configPath}`);
+  console.log(`  \x1b[1mExists:\x1b[0m       ${data.config ? "\x1b[32myes\x1b[0m" : "\x1b[90mno (using defaults)\x1b[0m"}`);
+
+  if (data.config) {
+    if (data.config.pricing) {
+      const count = Object.keys(data.config.pricing).length;
+      console.log(`  \x1b[1mPricing:\x1b[0m      ${count} custom model(s)`);
+      for (const [model, cost] of Object.entries(data.config.pricing)) {
+        const shortName = model.length > 30 ? model.slice(0, 29) + "…" : model;
+        console.log(`    \x1b[33m${shortName.padEnd(32)}\x1b[0m in=$${cost.input || 0}  out=$${cost.output || 0}  cache=$${cost.cacheRead || 0}`);
+      }
+    }
+    // Show other settings if present
+    const otherKeys = Object.keys(data.config).filter(k => k !== "pricing");
+    if (otherKeys.length > 0) {
+      console.log(`  \x1b[1mOther keys:\x1b[0m   ${otherKeys.join(", ")}`);
+    }
+  } else {
+    console.log("");
+    console.log("  \x1b[90mTo create a config file, run:\x1b[0m");
+    console.log(`  \x1b[36moc-inspector init\x1b[0m  \x1b[90m(or create ${data.configPath} manually)\x1b[0m`);
+  }
   console.log("");
 }
 

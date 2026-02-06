@@ -1,11 +1,21 @@
 /**
  * Model pricing lookup for cost calculation.
  *
- * Prices are per 1M tokens (USD). Loaded from openclaw.json model definitions
- * and supplemented with hardcoded pricing for built-in providers (Anthropic, OpenAI).
+ * Pricing resolution order (highest priority first):
+ *   1. User overrides from `~/.openclaw/.inspector.json` → `pricing` section
+ *   2. Model costs from `openclaw.json` → `models.providers.*.models[].cost`
+ *   3. Built-in hardcoded defaults (this file)
+ *
+ * Prices are per 1 M tokens (USD).
  *
  * @module pricing
  */
+
+import { readFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
+
+/** @type {string|null} Path to the inspector config directory. */
+let inspectorConfigDir = null;
 
 /**
  * Hardcoded pricing for well-known models (per 1M tokens, USD).
@@ -84,38 +94,90 @@ const BUILTIN_PRICING = {
 const pricingMap = new Map();
 
 /**
- * Initialize pricing table from openclaw.json config and built-in defaults.
+ * Read the inspector-level config file (`~/.openclaw/.inspector.json`).
+ *
+ * @param {string} openclawDir - Path to ~/.openclaw.
+ * @returns {object|null} Parsed config or null if not found.
+ */
+function readInspectorConfig(openclawDir) {
+  if (!openclawDir) return null;
+  const cfgPath = join(openclawDir, ".inspector.json");
+  if (!existsSync(cfgPath)) return null;
+  try {
+    return JSON.parse(readFileSync(cfgPath, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Initialize pricing table.
+ *
+ * Resolution order (highest priority wins):
+ *   1. `~/.openclaw/.inspector.json` → `pricing` map
+ *   2. `openclaw.json` → per-model `cost` objects
+ *   3. Built-in defaults in this file
  *
  * @param {object} config - Parsed openclaw.json.
+ * @param {string} [openclawDir] - Path to ~/.openclaw (for loading .inspector.json).
  *
  * Example:
- *   >>> initPricing(config);
+ *   >>> initPricing(config, "/Users/me/.openclaw");
  *   >>> calculateCost("claude-sonnet-4-5-20250929", { inputTokens: 1000, outputTokens: 500 });
  *   0.0105
  */
-export function initPricing(config) {
+export function initPricing(config, openclawDir) {
   pricingMap.clear();
+  inspectorConfigDir = openclawDir || null;
 
-  // Load built-in pricing first
+  // Layer 1: built-in defaults (lowest priority)
   for (const [model, cost] of Object.entries(BUILTIN_PRICING)) {
     pricingMap.set(model, cost);
   }
 
-  // Override/add from config providers
+  // Layer 2: openclaw.json per-model cost overrides
   const providers = config?.models?.providers || {};
   for (const [, providerCfg] of Object.entries(providers)) {
     if (!Array.isArray(providerCfg.models)) continue;
     for (const model of providerCfg.models) {
       if (model.id && model.cost) {
-        pricingMap.set(model.id, {
-          input: model.cost.input || 0,
-          output: model.cost.output || 0,
-          cacheRead: model.cost.cacheRead || 0,
-          cacheWrite: model.cost.cacheWrite || 0,
-        });
+        pricingMap.set(model.id, normalizeCost(model.cost));
       }
     }
   }
+
+  // Layer 3: user overrides from .inspector.json (highest priority)
+  const inspectorCfg = readInspectorConfig(openclawDir);
+  if (inspectorCfg?.pricing) {
+    for (const [model, cost] of Object.entries(inspectorCfg.pricing)) {
+      pricingMap.set(model, normalizeCost(cost));
+    }
+    console.log(`[inspector] Loaded ${Object.keys(inspectorCfg.pricing).length} custom pricing entries from .inspector.json`);
+  }
+}
+
+/**
+ * Normalize a cost object to ensure all fields exist.
+ *
+ * @param {object} cost - Raw cost definition.
+ * @returns {{ input: number, output: number, cacheRead: number, cacheWrite: number }}
+ */
+function normalizeCost(cost) {
+  return {
+    input: cost.input || 0,
+    output: cost.output || 0,
+    cacheRead: cost.cacheRead || 0,
+    cacheWrite: cost.cacheWrite || 0,
+  };
+}
+
+/**
+ * Get the inspector config (from .inspector.json).
+ *
+ * @returns {object|null} Parsed config or null.
+ */
+export function getInspectorConfig() {
+  return readInspectorConfig(inspectorConfigDir);
 }
 
 /**
