@@ -1,6 +1,29 @@
 # oc-inspector
 
-Real-time API traffic inspector for [OpenClaw](https://openclaw.ai). Intercepts LLM provider requests (Anthropic, OpenAI, BytePlus, Ollama, and more), shows token usage, costs, and message flow in a live web dashboard.
+A debugging and monitoring tool for [OpenClaw](https://openclaw.ai) that helps you understand **where your tokens and money are going**.
+
+When working with LLM agents you often have no visibility into what's actually happening under the hood — how many tokens each request burns, which models cost the most, what system prompts look like, how tool calls are structured. `oc-inspector` sits between OpenClaw and your LLM providers as a transparent proxy, capturing every request and response in real time so you can see the full picture: token usage, costs, message flow, thinking blocks, tool calls — everything in a clear, human-readable format.
+
+Use it to:
+- **Debug** agent behavior by inspecting actual API requests and responses
+- **Find token leaks** — see which conversations, models, or providers consume the most
+- **Track costs** — per-request, per-model, per-day breakdowns with persistent history
+- **Understand** what OpenClaw sends to each provider (system prompts, tool definitions, context)
+
+> **⚠️ USE AT YOUR OWN RISK**
+>
+> This tool works by patching `openclaw.json` to route API traffic through a local proxy. While it includes safeguards (automatic config restore on stop/shutdown, backup files, double-enable protection), **always keep a manual backup of your `openclaw.json` before using the inspector**:
+>
+> ```bash
+> cp ~/.openclaw/openclaw.json ~/.openclaw/openclaw.json.manual-backup
+> ```
+>
+> If something goes wrong, restore it:
+>
+> ```bash
+> cp ~/.openclaw/openclaw.json.manual-backup ~/.openclaw/openclaw.json
+> openclaw gateway restart
+> ```
 
 ## Quick Start
 
@@ -8,7 +31,7 @@ Real-time API traffic inspector for [OpenClaw](https://openclaw.ai). Intercepts 
 npx oc-inspector
 ```
 
-Opens the inspector proxy on `localhost:18800` with a live web dashboard.
+Starts the inspector daemon in background on `localhost:18800` with a live web dashboard.
 
 ---
 
