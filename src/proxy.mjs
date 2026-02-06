@@ -280,8 +280,8 @@ export async function handleProxy(req, res) {
   storeEntry(entry);
   broadcastFn?.("new", entrySummary(entry));
 
-  // Build upstream URL
-  const targetUrl = new URL(rest, targetBase.endsWith("/") ? targetBase : targetBase + "/");
+  // Build upstream URL — concatenate base path + rest to preserve base paths like /api/v3
+  const targetUrl = new URL(targetBase.replace(/\/+$/, "") + rest);
   const isHttps = targetUrl.protocol === "https:";
   const transport = isHttps ? https : http;
 
