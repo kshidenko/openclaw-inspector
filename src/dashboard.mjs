@@ -143,7 +143,7 @@ pre.json{background:#161b22;padding:10px;border-radius:4px;overflow-x:auto;white
 </head>
 <body>
 <div class="header">
-  <h1><span>&#127990;</span> OpenClaw Inspector</h1>
+  <h1 style="cursor:pointer" onclick="goHome()"><span>&#127990;</span> OpenClaw Inspector</h1>
   <div class="stats">
     <span>Requests: <b id="statReqs">0</b></span>
     <span>Tokens: <b id="statTokens">0</b></span>
@@ -660,6 +660,15 @@ document.getElementById('btnClear').onclick = () => {
   updateStats();
 };
 
+/* ── Navigation ── */
+function goHome() {
+  // Hide history panel, show entries
+  historyVisible = false;
+  document.getElementById('historyPanel').classList.remove('visible');
+  document.getElementById('btnHistory').classList.remove('active');
+  document.getElementById('entries').style.display = '';
+}
+
 /* ── History ── */
 let historyVisible = false;
 
@@ -667,8 +676,10 @@ function toggleHistory() {
   historyVisible = !historyVisible;
   const panel = document.getElementById('historyPanel');
   const btn = document.getElementById('btnHistory');
+  const entries = document.getElementById('entries');
   panel.classList.toggle('visible', historyVisible);
   btn.classList.toggle('active', historyVisible);
+  entries.style.display = historyVisible ? 'none' : '';
   if (historyVisible) loadHistory(7);
 }
 
