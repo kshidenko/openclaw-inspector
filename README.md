@@ -61,8 +61,11 @@ oc-inspector
 ### Start the inspector
 
 ```bash
-# Default (port 18800)
+# Start as background daemon (default) — terminal is free immediately
 npx oc-inspector
+
+# Start in foreground (interactive, for debugging)
+npx oc-inspector run
 
 # Custom port
 npx oc-inspector --port 9000
@@ -74,23 +77,40 @@ npx oc-inspector --open
 npx oc-inspector --config /path/to/openclaw.json
 ```
 
+### Stop / Restart
+
+```bash
+# Stop the background daemon
+oc-inspector stop
+
+# Restart
+oc-inspector restart
+```
+
 ### CLI Commands
 
 | Command | Description |
 |---------|-------------|
-| `start` | Start the inspector proxy + dashboard (default) |
+| `start` | Start inspector as a background daemon (default) |
+| `stop` | Stop the running daemon |
+| `restart` | Restart the daemon |
+| `run` | Start in foreground (interactive mode, for debugging) |
 | `enable` | Enable interception — patches `openclaw.json` and restarts the gateway |
 | `disable` | Disable interception — restores original config |
-| `status` | Show current interception status |
+| `status` | Show daemon + interception status |
 | `stats` | Show live token usage and cost statistics |
 | `history` | Show daily usage history (persisted across restarts) |
 | `pricing` | Show model pricing table (built-in + custom overrides) |
 | `providers` | List detected providers and their upstream URLs |
 | `config` | Show `.inspector.json` path and contents |
+| `logs` | Show daemon log output |
 
 ### Examples
 
 ```bash
+# Start and forget
+oc-inspector start
+
 # Quick stats from a running inspector
 oc-inspector stats
 
@@ -103,8 +123,11 @@ oc-inspector history --days 30
 # View pricing table
 oc-inspector pricing
 
-# Check interception status
+# Check daemon + interception status
 oc-inspector status
+
+# View last 100 log lines
+oc-inspector logs --lines 100
 ```
 
 ### Options
@@ -116,13 +139,14 @@ oc-inspector status
 | `--config <path>` | Custom path to `openclaw.json` | `~/.openclaw/openclaw.json` |
 | `--json` | Output as JSON (for `stats`, `status`, `providers`, `history`, `pricing`) | `false` |
 | `--days <number>` | Number of days to show in `history` command | `7` |
+| `--lines <number>` | Number of log lines to show in `logs` command | `50` |
 | `--help`, `-h` | Show help message | — |
 
 ---
 
 ## How It Works
 
-1. **Start** — The inspector launches an HTTP reverse proxy on `localhost:18800`
+1. **Start** — `oc-inspector` launches a background daemon with an HTTP reverse proxy on `localhost:18800`. The terminal is free immediately.
 2. **Enable** — Click **Enable** in the web UI (or run `oc-inspector enable`). This:
    - Backs up `openclaw.json`
    - Rewrites each provider's `baseUrl` to route through `http://127.0.0.1:18800/{provider}/...`

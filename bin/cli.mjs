@@ -7,29 +7,68 @@
  *   npx oc-inspector [command] [options]
  *
  * Commands:
- *   start (default)   Start the inspector proxy + dashboard
+ *   start (default)   Start inspector as a background daemon
+ *   stop              Stop the background daemon
+ *   run               Start inspector in foreground (interactive)
  *   enable            Enable interception (patch OpenClaw config)
  *   disable           Disable interception (restore config)
- *   status            Show interception status
+ *   status            Show interception + daemon status
  *   stats             Show token usage statistics
+ *   history           Show daily usage history
  *   providers         List detected providers
- *   pricing           Show model pricing table (built-in + custom)
- *   config            Show path and contents of .inspector.json
+ *   pricing           Show model pricing table
+ *   config            Show .inspector.json contents
+ *   logs              Tail daemon log file
  *
  * Options:
  *   --port <number>   Port for the inspector proxy (default: 18800)
  *   --open            Auto-open the dashboard in a browser
  *   --config <path>   Custom path to openclaw.json
  *   --json            Output as JSON (for stats/status)
+ *   --days <number>   Days for history command (default: 7)
  *   --help            Show help message
  */
 
+import { spawn, execSync } from "node:child_process";
+import { readFileSync, writeFileSync, existsSync, unlinkSync, mkdirSync, openSync, appendFileSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
 const args = process.argv.slice(2);
+
+/** Inspector state directory for PID/log files. */
+const INSPECTOR_DIR = join(homedir(), ".openclaw", ".inspector-runtime");
+
+/** PID file path. */
+const PID_FILE = join(INSPECTOR_DIR, "inspector.pid");
+
+/** Log file path. */
+const LOG_FILE = join(INSPECTOR_DIR, "inspector.log");
+
+// ═══════════════════════════════════════════════════════════════
+// Arg parser
+// ═══════════════════════════════════════════════════════════════
 
 /** Simple arg parser. */
 function parseArgs(argv) {
-  const opts = { command: "start", port: 18800, open: false, config: undefined, json: false, days: 7, help: false };
-  const commands = new Set(["start", "enable", "disable", "status", "stats", "providers", "history", "pricing", "config"]);
+  const opts = {
+    command: "start",
+    port: 18800,
+    open: false,
+    config: undefined,
+    json: false,
+    days: 7,
+    lines: 50,
+    help: false,
+  };
+  const commands = new Set([
+    "start", "stop", "run", "restart",
+    "enable", "disable", "status",
+    "stats", "providers", "history", "pricing", "config",
+    "logs", "_serve",
+  ]);
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (commands.has(arg) && i === 0) { opts.command = arg; continue; }
@@ -38,14 +77,18 @@ function parseArgs(argv) {
     if (arg === "--config" && argv[i + 1]) { opts.config = argv[++i]; continue; }
     if (arg === "--json") { opts.json = true; continue; }
     if (arg === "--days" && argv[i + 1]) { opts.days = parseInt(argv[++i], 10); continue; }
+    if (arg === "--lines" && argv[i + 1]) { opts.lines = parseInt(argv[++i], 10); continue; }
     if (arg === "--help" || arg === "-h") { opts.help = true; continue; }
-    // First non-flag arg is command
     if (!arg.startsWith("-") && !opts._cmdSet) { opts.command = arg; opts._cmdSet = true; }
   }
   return opts;
 }
 
 const opts = parseArgs(args);
+
+// ═══════════════════════════════════════════════════════════════
+// Help
+// ═══════════════════════════════════════════════════════════════
 
 if (opts.help) {
   console.log(`
@@ -55,15 +98,19 @@ if (opts.help) {
     npx oc-inspector [command] [options]
 
   \x1b[1mCommands:\x1b[0m
-    start             Start the inspector proxy + dashboard (default)
+    start             Start inspector as a background daemon (default)
+    stop              Stop the running daemon
+    restart           Restart the daemon
+    run               Start in foreground (interactive mode)
     enable            Enable interception (patches OpenClaw config)
     disable           Disable interception (restores config)
-    status            Show current interception status
-    stats             Show token usage statistics from running inspector
-    history           Show daily usage history (persisted across restarts)
+    status            Show daemon + interception status
+    stats             Show token usage statistics
+    history           Show daily usage history
     providers         List detected providers and target URLs
-    pricing           Show model pricing table (built-in + custom overrides)
+    pricing           Show model pricing table
     config            Show .inspector.json path and status
+    logs              Show daemon log output
 
   \x1b[1mOptions:\x1b[0m
     --port <number>   Port for the inspector proxy (default: 18800)
@@ -71,50 +118,306 @@ if (opts.help) {
     --config <path>   Custom path to openclaw.json
     --json            Output as JSON (for stats, status, providers, history)
     --days <number>   Number of days to show in history (default: 7)
+    --lines <number>  Number of log lines to show (default: 50)
     --help, -h        Show this help message
 
   \x1b[1mExamples:\x1b[0m
-    npx oc-inspector                   # Start inspector
-    npx oc-inspector --open            # Start + open browser
+    npx oc-inspector                   # Start daemon (background)
+    npx oc-inspector run               # Start foreground (interactive)
+    npx oc-inspector stop              # Stop daemon
+    npx oc-inspector restart           # Restart daemon
     npx oc-inspector enable            # Enable interception
     npx oc-inspector disable           # Disable interception
     npx oc-inspector stats             # Show live token stats
     npx oc-inspector stats --json      # Stats as JSON
-    npx oc-inspector history           # Daily history (last 7 days)
     npx oc-inspector history --days 30 # Last 30 days
     npx oc-inspector pricing           # Show pricing table
-    npx oc-inspector config            # Show config file path
+    npx oc-inspector logs              # Show daemon logs
 `);
   process.exit(0);
 }
 
-// ── Remote commands: talk to a running inspector ──
+// ═══════════════════════════════════════════════════════════════
+// Command routing
+// ═══════════════════════════════════════════════════════════════
+
+// Hidden: _serve is the actual foreground server (spawned by start)
+if (opts.command === "_serve") {
+  await runServe(opts);
+}
+
+// start: launch daemon
+if (opts.command === "start") {
+  await runDaemonStart(opts);
+  process.exit(0);
+}
+
+// stop: kill daemon
+if (opts.command === "stop") {
+  runDaemonStop();
+  process.exit(0);
+}
+
+// restart: stop + start
+if (opts.command === "restart") {
+  runDaemonStop(/* silent */ true);
+  await new Promise((r) => setTimeout(r, 800));
+  await runDaemonStart(opts);
+  process.exit(0);
+}
+
+// run: foreground (interactive)
+if (opts.command === "run") {
+  await runForeground(opts);
+}
+
+// logs: show daemon log
+if (opts.command === "logs") {
+  runLogs(opts);
+  process.exit(0);
+}
+
+// Remote commands: talk to a running inspector
 const remoteCommands = new Set(["stats", "providers", "history", "pricing", "config"]);
 if (remoteCommands.has(opts.command)) {
   await runRemoteCommand(opts);
   process.exit(0);
 }
 
-// ── Local commands: modify config directly ──
+// Local commands: modify config directly
 if (opts.command === "enable" || opts.command === "disable" || opts.command === "status") {
   await runLocalCommand(opts);
   process.exit(0);
 }
 
-// ── Start command ──
-if (opts.command === "start") {
-  await runStart(opts);
+// ═══════════════════════════════════════════════════════════════
+// Daemon management
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Start the inspector as a detached background daemon.
+ *
+ * Spawns `_serve` command in a child process with stdout/stderr redirected
+ * to a log file. Writes PID to disk for later stop/status.
+ *
+ * @param {object} opts - Parsed CLI options.
+ */
+async function runDaemonStart(opts) {
+  // Check if already running
+  const running = getDaemonStatus();
+  if (running.alive) {
+    console.log("");
+    console.log("  \x1b[38;5;208m🦞 OpenClaw Inspector\x1b[0m");
+    console.log("");
+    console.log(`  \x1b[33m⚠\x1b[0m  Already running (PID ${running.pid})`);
+    console.log(`  \x1b[32m✓\x1b[0m Dashboard:  http://127.0.0.1:${opts.port}`);
+    console.log("");
+    console.log(`  Run \x1b[1moc-inspector restart\x1b[0m to restart`);
+    console.log("");
+    return;
+  }
+
+  // Ensure runtime dir exists
+  mkdirSync(INSPECTOR_DIR, { recursive: true });
+
+  // Build child args
+  const childArgs = ["_serve", "--port", String(opts.port)];
+  if (opts.config) childArgs.push("--config", opts.config);
+  if (opts.open) childArgs.push("--open");
+
+  // Open log file descriptor for spawn stdio
+  appendFileSync(LOG_FILE, `\n--- Inspector starting at ${new Date().toISOString()} ---\n`);
+  const logFd = openSync(LOG_FILE, "a");
+
+  // Spawn detached child process
+  const child = spawn(process.execPath, [__filename, ...childArgs], {
+    detached: true,
+    stdio: ["ignore", logFd, logFd],
+    env: { ...process.env, OC_INSPECTOR_DAEMON: "1" },
+  });
+
+  // Write PID
+  writeFileSync(PID_FILE, String(child.pid));
+  child.unref();
+
+  // Wait a moment and check if it started OK
+  await new Promise((r) => setTimeout(r, 1500));
+
+  const check = getDaemonStatus();
+
+  console.log("");
+  console.log("  \x1b[38;5;208m🦞 OpenClaw Inspector\x1b[0m");
+  console.log("");
+
+  if (check.alive) {
+    console.log(`  \x1b[32m✓\x1b[0m Started in background (PID ${child.pid})`);
+    console.log(`  \x1b[32m✓\x1b[0m Dashboard:  http://127.0.0.1:${opts.port}`);
+    console.log(`  \x1b[32m✓\x1b[0m Log file:   ${LOG_FILE}`);
+    console.log("");
+    console.log(`  \x1b[90mStop with:\x1b[0m  oc-inspector stop`);
+    console.log(`  \x1b[90mView logs:\x1b[0m  oc-inspector logs`);
+    console.log("");
+  } else {
+    console.log(`  \x1b[31m✗ Failed to start — check logs:\x1b[0m`);
+    console.log(`    ${LOG_FILE}`);
+    console.log("");
+    // Show last few lines of log
+    try {
+      const log = readFileSync(LOG_FILE, "utf-8");
+      const lines = log.trim().split("\n").slice(-10);
+      for (const l of lines) console.log(`    ${l}`);
+      console.log("");
+    } catch { /* ignore */ }
+  }
+}
+
+/**
+ * Stop the running daemon process.
+ *
+ * @param {boolean} [silent=false] - Suppress output (used by restart).
+ */
+function runDaemonStop(silent = false) {
+  const st = getDaemonStatus();
+
+  if (!st.pid) {
+    if (!silent) {
+      console.log("");
+      console.log("  \x1b[90m● Inspector is not running (no PID file)\x1b[0m");
+      console.log("");
+    }
+    return;
+  }
+
+  if (st.alive) {
+    try {
+      process.kill(st.pid, "SIGTERM");
+      if (!silent) {
+        console.log("");
+        console.log(`  \x1b[32m✓\x1b[0m Stopped inspector (PID ${st.pid})`);
+        console.log("");
+      }
+    } catch (err) {
+      if (!silent) {
+        console.log("");
+        console.log(`  \x1b[31m✗ Failed to stop PID ${st.pid}: ${err.message}\x1b[0m`);
+        console.log("");
+      }
+    }
+  } else {
+    if (!silent) {
+      console.log("");
+      console.log(`  \x1b[90m● Inspector was not running (stale PID ${st.pid})\x1b[0m`);
+      console.log("");
+    }
+  }
+
+  // Clean up PID file
+  try { unlinkSync(PID_FILE); } catch { /* ignore */ }
+}
+
+/**
+ * Check if the daemon process is alive.
+ *
+ * @returns {{ pid: number|null, alive: boolean }}
+ */
+function getDaemonStatus() {
+  if (!existsSync(PID_FILE)) return { pid: null, alive: false };
+  try {
+    const pid = parseInt(readFileSync(PID_FILE, "utf-8").trim(), 10);
+    if (isNaN(pid)) return { pid: null, alive: false };
+    // Signal 0 checks if process exists without killing it
+    process.kill(pid, 0);
+    return { pid, alive: true };
+  } catch (err) {
+    if (err.code === "ESRCH") {
+      // Process doesn't exist
+      return { pid: null, alive: false };
+    }
+    if (err.code === "EPERM") {
+      // Process exists but we can't signal it (still alive)
+      const pid = parseInt(readFileSync(PID_FILE, "utf-8").trim(), 10);
+      return { pid, alive: true };
+    }
+    return { pid: null, alive: false };
+  }
+}
+
+/**
+ * Show the last N lines of the daemon log file.
+ *
+ * @param {object} opts - Parsed CLI options.
+ */
+function runLogs(opts) {
+  if (!existsSync(LOG_FILE)) {
+    console.log("\n  \x1b[90mNo log file found. Start the daemon first: oc-inspector start\x1b[0m\n");
+    return;
+  }
+  try {
+    const content = readFileSync(LOG_FILE, "utf-8");
+    const lines = content.trim().split("\n");
+    const tail = lines.slice(-opts.lines);
+    console.log("");
+    console.log(`  \x1b[38;5;208m🦞 Inspector Logs\x1b[0m  \x1b[90m(last ${tail.length} lines)\x1b[0m`);
+    console.log("  " + "─".repeat(56));
+    for (const l of tail) {
+      console.log(`  ${l}`);
+    }
+    console.log("  " + "─".repeat(56));
+    console.log(`  \x1b[90m${LOG_FILE}\x1b[0m`);
+    console.log("");
+  } catch (err) {
+    console.error(`  \x1b[31m✗ Cannot read log: ${err.message}\x1b[0m`);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
-// Command implementations
+// Foreground / Serve
 // ═══════════════════════════════════════════════════════════════
 
-async function runStart(opts) {
+/**
+ * Hidden `_serve` command — runs the server in current process.
+ * Called by the daemon spawn or can be used directly.
+ *
+ * @param {object} opts - Parsed CLI options.
+ */
+async function runServe(opts) {
   const { startServer } = await import("../src/server.mjs");
 
   console.log("");
   console.log("  \x1b[38;5;208m🦞 OpenClaw Inspector\x1b[0m");
+  console.log("");
+
+  try {
+    const { url, openclawDir } = await startServer({
+      port: opts.port,
+      configPath: opts.config,
+      open: opts.open,
+    });
+
+    console.log(`  \x1b[32m✓\x1b[0m Dashboard:  ${url}`);
+    console.log(`  \x1b[32m✓\x1b[0m Config:     ${openclawDir}/openclaw.json`);
+    console.log(`  \x1b[32m✓\x1b[0m Proxy port: ${opts.port}`);
+    console.log(`  \x1b[32m✓\x1b[0m PID:        ${process.pid}`);
+    console.log("");
+  } catch (err) {
+    console.error(`\x1b[31m  ✗ Failed to start: ${err.message}\x1b[0m`);
+    process.exit(1);
+  }
+
+  process.on("SIGINT", () => { console.log("\n  Shutting down..."); process.exit(0); });
+  process.on("SIGTERM", () => { console.log("\n  Shutting down (SIGTERM)..."); process.exit(0); });
+}
+
+/**
+ * Interactive foreground mode — same as `_serve` but with "Press Ctrl+C" prompt.
+ *
+ * @param {object} opts - Parsed CLI options.
+ */
+async function runForeground(opts) {
+  const { startServer } = await import("../src/server.mjs");
+
+  console.log("");
+  console.log("  \x1b[38;5;208m🦞 OpenClaw Inspector\x1b[0m  \x1b[90m(foreground)\x1b[0m");
   console.log("");
 
   try {
@@ -139,6 +442,10 @@ async function runStart(opts) {
   process.on("SIGTERM", () => process.exit(0));
 }
 
+// ═══════════════════════════════════════════════════════════════
+// Local commands (enable / disable / status)
+// ═══════════════════════════════════════════════════════════════
+
 async function runLocalCommand(opts) {
   const { detect, readConfig, enable, disable, status } = await import("../src/config.mjs");
   const oc = detect(opts.config);
@@ -150,15 +457,27 @@ async function runLocalCommand(opts) {
 
   if (opts.command === "status") {
     const st = status(oc.dir);
+    const daemon = getDaemonStatus();
+
     if (opts.json) {
-      console.log(JSON.stringify(st, null, 2));
+      console.log(JSON.stringify({ ...st, daemon }, null, 2));
     } else {
-      const dot = st.enabled ? "\x1b[32m●\x1b[0m" : "\x1b[90m●\x1b[0m";
-      const label = st.enabled ? "\x1b[32menabled\x1b[0m" : "\x1b[90mdisabled\x1b[0m";
-      console.log(`\n  ${dot} Interception: ${label}`);
+      // Daemon status
+      const dDot = daemon.alive ? "\x1b[32m●\x1b[0m" : "\x1b[90m●\x1b[0m";
+      const dLabel = daemon.alive ? `\x1b[32mrunning\x1b[0m (PID ${daemon.pid})` : "\x1b[90mstopped\x1b[0m";
+      console.log(`\n  ${dDot} Daemon:       ${dLabel}`);
+
+      // Interception status
+      const iDot = st.enabled ? "\x1b[32m●\x1b[0m" : "\x1b[90m●\x1b[0m";
+      const iLabel = st.enabled ? "\x1b[32menabled\x1b[0m" : "\x1b[90mdisabled\x1b[0m";
+      console.log(`  ${iDot} Interception: ${iLabel}`);
       if (st.enabled) {
         console.log(`    Port: ${st.port}`);
         console.log(`    Providers: ${st.providers.join(", ")}`);
+      }
+
+      if (daemon.alive) {
+        console.log(`\n  \x1b[90mDashboard: http://127.0.0.1:${st.port || opts.port}\x1b[0m`);
       }
       console.log("");
     }
@@ -188,6 +507,10 @@ async function runLocalCommand(opts) {
     return;
   }
 }
+
+// ═══════════════════════════════════════════════════════════════
+// Remote commands (talk to running inspector)
+// ═══════════════════════════════════════════════════════════════
 
 async function runRemoteCommand(opts) {
   const base = `http://127.0.0.1:${opts.port}`;
@@ -238,7 +561,7 @@ async function runRemoteCommand(opts) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// Helpers
+// Helpers / Printers
 // ═══════════════════════════════════════════════════════════════
 
 async function fetchApi(url) {
@@ -247,7 +570,7 @@ async function fetchApi(url) {
     return await res.json();
   } catch {
     console.error(`  \x1b[31m✗ Cannot connect to inspector at ${url}\x1b[0m`);
-    console.error(`    Is the inspector running? Start with: npx oc-inspector`);
+    console.error(`    Is the inspector running? Start with: oc-inspector start`);
     return null;
   }
 }
@@ -271,7 +594,6 @@ function printStats(s) {
   console.log("  " + "─".repeat(50));
   console.log("");
 
-  // Totals
   console.log(`  \x1b[1mRequests:\x1b[0m    ${s.totalRequests}${s.errors > 0 ? `  (\x1b[31m${s.errors} errors\x1b[0m)` : ""}`);
   console.log(`  \x1b[1mTokens:\x1b[0m      ${fmtNum(s.totalTokens)} total  (in: ${fmtNum(s.totalInputTokens)}  out: ${fmtNum(s.totalOutputTokens)})`);
   if (s.totalCachedTokens > 0) {
@@ -283,7 +605,6 @@ function printStats(s) {
     console.log(`  \x1b[1mAvg latency:\x1b[0m ${avgMs}ms`);
   }
 
-  // By provider
   const providers = Object.entries(s.byProvider);
   if (providers.length > 0) {
     console.log("");
@@ -297,7 +618,6 @@ function printStats(s) {
     }
   }
 
-  // By model
   const models = Object.entries(s.byModel);
   if (models.length > 0) {
     console.log("");
@@ -323,7 +643,6 @@ function printPricing(models) {
   console.log(`  \x1b[1m${"Model".padEnd(36)}  ${"Input".padStart(8)}  ${"Output".padStart(8)}  ${"Cache R".padStart(8)}  ${"Cache W".padStart(8)}\x1b[0m`);
   console.log("  " + "─".repeat(76));
 
-  // Group by provider prefix
   const sorted = [...models].sort((a, b) => a.model.localeCompare(b.model));
   let lastPrefix = "";
   for (const m of sorted) {
@@ -363,15 +682,14 @@ function printConfig(data) {
         console.log(`    \x1b[33m${shortName.padEnd(32)}\x1b[0m in=$${cost.input || 0}  out=$${cost.output || 0}  cache=$${cost.cacheRead || 0}`);
       }
     }
-    // Show other settings if present
     const otherKeys = Object.keys(data.config).filter(k => k !== "pricing");
     if (otherKeys.length > 0) {
       console.log(`  \x1b[1mOther keys:\x1b[0m   ${otherKeys.join(", ")}`);
     }
   } else {
     console.log("");
-    console.log("  \x1b[90mTo create a config file, run:\x1b[0m");
-    console.log(`  \x1b[36moc-inspector init\x1b[0m  \x1b[90m(or create ${data.configPath} manually)\x1b[0m`);
+    console.log("  \x1b[90mTo create a config file, create:\x1b[0m");
+    console.log(`    \x1b[36m${data.configPath}\x1b[0m`);
   }
   console.log("");
 }
@@ -386,7 +704,6 @@ function printHistory(days) {
     return;
   }
 
-  // Summary table
   console.log("");
   console.log("  \x1b[1m  Date          Reqs    Input      Output     Cached     Cost\x1b[0m");
   console.log("  " + "─".repeat(64));
@@ -418,7 +735,6 @@ function printHistory(days) {
   const tCost = ("$" + grandCost.toFixed(4)).padStart(9);
   console.log(`  \x1b[1m  TOTAL        ${tReqs}  ${tIn}  ${tOut}  ${tCached}  \x1b[32m${tCost}\x1b[0m\x1b[0m`);
 
-  // Per-model breakdown across all days
   const modelTotals = {};
   for (const d of days) {
     for (const [name, v] of Object.entries(d.byModel || {})) {
