@@ -67,7 +67,7 @@ function parseArgs(argv) {
     "start", "stop", "run", "restart",
     "enable", "disable", "status",
     "stats", "providers", "history", "pricing", "config",
-    "logs", "_serve",
+    "logs", "help", "_serve",
   ]);
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -141,6 +141,15 @@ if (opts.help) {
 // Command routing
 // ═══════════════════════════════════════════════════════════════
 
+// help: show commands
+if (opts.command === "help") {
+  console.log("");
+  console.log("  \x1b[38;5;208m🦞 oc-inspector\x1b[0m — Real-time API traffic inspector for OpenClaw");
+  console.log("");
+  printCommandsHelp();
+  process.exit(0);
+}
+
 // Hidden: _serve is the actual foreground server (spawned by start)
 if (opts.command === "_serve") {
   await runServe(opts);
@@ -212,8 +221,7 @@ async function runDaemonStart(opts) {
     console.log(`  \x1b[33m⚠\x1b[0m  Already running (PID ${running.pid})`);
     console.log(`  \x1b[32m✓\x1b[0m Dashboard:  http://127.0.0.1:${opts.port}`);
     console.log("");
-    console.log(`  Run \x1b[1moc-inspector restart\x1b[0m to restart`);
-    console.log("");
+    printCommandsHelp();
     return;
   }
 
@@ -254,9 +262,7 @@ async function runDaemonStart(opts) {
     console.log(`  \x1b[32m✓\x1b[0m Dashboard:  http://127.0.0.1:${opts.port}`);
     console.log(`  \x1b[32m✓\x1b[0m Log file:   ${LOG_FILE}`);
     console.log("");
-    console.log(`  \x1b[90mStop with:\x1b[0m  oc-inspector stop`);
-    console.log(`  \x1b[90mView logs:\x1b[0m  oc-inspector logs`);
-    console.log("");
+    printCommandsHelp();
   } else {
     console.log(`  \x1b[31m✗ Failed to start — check logs:\x1b[0m`);
     console.log(`    ${LOG_FILE}`);
@@ -563,6 +569,36 @@ async function runRemoteCommand(opts) {
 // ═══════════════════════════════════════════════════════════════
 // Helpers / Printers
 // ═══════════════════════════════════════════════════════════════
+
+/**
+ * Print a compact command reference table.
+ * Shown after successful daemon start and via `help` command.
+ */
+function printCommandsHelp() {
+  const C = "\x1b[36m";   // cyan
+  const D = "\x1b[90m";   // dim
+  const R = "\x1b[0m";    // reset
+  const B = "\x1b[1m";    // bold
+
+  console.log(`  ${B}Commands:${R}`);
+  console.log(`    ${C}oc-inspector${R}              Start daemon ${D}(default)${R}`);
+  console.log(`    ${C}oc-inspector stop${R}          Stop daemon`);
+  console.log(`    ${C}oc-inspector restart${R}       Restart daemon`);
+  console.log(`    ${C}oc-inspector run${R}           Foreground mode ${D}(interactive)${R}`);
+  console.log(`    ${C}oc-inspector status${R}        Daemon + interception status`);
+  console.log(`    ${C}oc-inspector enable${R}        Enable interception`);
+  console.log(`    ${C}oc-inspector disable${R}       Disable interception`);
+  console.log(`    ${C}oc-inspector stats${R}         Live token/cost statistics`);
+  console.log(`    ${C}oc-inspector history${R}       Daily usage history`);
+  console.log(`    ${C}oc-inspector pricing${R}       Model pricing table`);
+  console.log(`    ${C}oc-inspector providers${R}     Active providers list`);
+  console.log(`    ${C}oc-inspector config${R}        Inspector config info`);
+  console.log(`    ${C}oc-inspector logs${R}          Daemon log output`);
+  console.log(`    ${C}oc-inspector help${R}          Show this help`);
+  console.log("");
+  console.log(`  ${D}Use --json for machine-readable output. See oc-inspector --help for all options.${R}`);
+  console.log("");
+}
 
 async function fetchApi(url) {
   try {
