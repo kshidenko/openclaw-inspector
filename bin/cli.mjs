@@ -176,15 +176,16 @@ if (opts.command === "start") {
   process.exit(0);
 }
 
-// stop: kill daemon
+// stop: kill daemon + restore config
 if (opts.command === "stop") {
-  runDaemonStop();
+  console.log("");
+  await runDaemonStop(false, opts);
   process.exit(0);
 }
 
 // restart: stop + start
 if (opts.command === "restart") {
-  runDaemonStop(/* silent */ true);
+  await runDaemonStop(/* silent */ true, opts);
   await new Promise((r) => setTimeout(r, 800));
   await runDaemonStart(opts);
   process.exit(0);
@@ -293,11 +294,38 @@ async function runDaemonStart(opts) {
 }
 
 /**
- * Stop the running daemon process.
+ * Stop the running daemon and restore original OpenClaw config.
+ *
+ * Automatically calls `disable` to restore the original provider URLs
+ * and restart the gateway, so OpenClaw doesn't keep routing through
+ * the dead proxy.
  *
  * @param {boolean} [silent=false] - Suppress output (used by restart).
+ * @param {object} [cmdOpts] - CLI opts (for config path).
  */
-function runDaemonStop(silent = false) {
+async function runDaemonStop(silent = false, cmdOpts = {}) {
+  // 1. Restore original config before killing the proxy
+  try {
+    const { detect, disable, status } = await import("../src/config.mjs");
+    const oc = detect(cmdOpts.config);
+    if (oc.exists) {
+      const st = status(oc.dir);
+      if (st.enabled) {
+        const result = disable({ configPath: oc.configPath, openclawDir: oc.dir });
+        if (!silent) {
+          if (result.ok) {
+            console.log(`  \x1b[32m✓\x1b[0m Config restored — ${result.message}`);
+          } else {
+            console.log(`  \x1b[33m⚠\x1b[0m Config restore: ${result.message}`);
+          }
+        }
+      }
+    }
+  } catch {
+    // Non-critical — still kill the process
+  }
+
+  // 2. Kill the daemon process
   const st = getDaemonStatus();
 
   if (!st.pid) {
@@ -313,13 +341,11 @@ function runDaemonStop(silent = false) {
     try {
       process.kill(st.pid, "SIGTERM");
       if (!silent) {
-        console.log("");
         console.log(`  \x1b[32m✓\x1b[0m Stopped inspector (PID ${st.pid})`);
         console.log("");
       }
     } catch (err) {
       if (!silent) {
-        console.log("");
         console.log(`  \x1b[31m✗ Failed to stop PID ${st.pid}: ${err.message}\x1b[0m`);
         console.log("");
       }
