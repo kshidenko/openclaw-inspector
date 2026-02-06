@@ -10,7 +10,7 @@
 import http from "node:http";
 import { execSync } from "node:child_process";
 import { renderDashboard } from "./dashboard.mjs";
-import { initProxy, handleProxy, updateTargets, clearEntries } from "./proxy.mjs";
+import { initProxy, handleProxy, updateTargets, clearEntries, getStats } from "./proxy.mjs";
 import { initWebSocket, broadcast } from "./ws.mjs";
 import { detect, readConfig, enable, disable, status } from "./config.mjs";
 import { buildTargetMap, BUILTIN_URLS } from "./providers.mjs";
@@ -105,6 +105,12 @@ export async function startServer({ port = 18800, configPath, open = false }) {
       } catch (err) {
         jsonResponse(res, 500, { ok: false, message: err.message });
       }
+      return;
+    }
+
+    // API: stats
+    if (url === "/api/stats" && req.method === "GET") {
+      jsonResponse(res, 200, getStats());
       return;
     }
 

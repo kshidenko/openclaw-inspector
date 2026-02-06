@@ -55,6 +55,70 @@ export function clearEntries() {
 }
 
 /**
+ * Compute aggregate statistics across all captured entries.
+ *
+ * @returns {object} Stats including totals per provider, per model, and overall.
+ */
+export function getStats() {
+  const byProvider = {};
+  const byModel = {};
+  let totalRequests = 0;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let totalCachedTokens = 0;
+  let totalDuration = 0;
+  let errors = 0;
+
+  for (const id of entryOrder) {
+    const e = entries.get(id);
+    if (!e) continue;
+    totalRequests++;
+    if (e.state === "error") errors++;
+    if (e.duration) totalDuration += e.duration;
+
+    const u = e.usage;
+    if (!u) continue;
+    const inp = u.inputTokens || 0;
+    const out = u.outputTokens || 0;
+    const cached = u.cachedTokens || 0;
+    totalInputTokens += inp;
+    totalOutputTokens += out;
+    totalCachedTokens += cached;
+
+    // Per provider
+    const p = e.provider || "unknown";
+    if (!byProvider[p]) byProvider[p] = { requests: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, errors: 0 };
+    byProvider[p].requests++;
+    byProvider[p].inputTokens += inp;
+    byProvider[p].outputTokens += out;
+    byProvider[p].cachedTokens += cached;
+    if (e.state === "error") byProvider[p].errors++;
+
+    // Per model
+    const m = u.model || e.reqModel || "?";
+    if (m !== "?") {
+      if (!byModel[m]) byModel[m] = { requests: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, provider: p };
+      byModel[m].requests++;
+      byModel[m].inputTokens += inp;
+      byModel[m].outputTokens += out;
+      byModel[m].cachedTokens += cached;
+    }
+  }
+
+  return {
+    totalRequests,
+    totalInputTokens,
+    totalOutputTokens,
+    totalCachedTokens,
+    totalTokens: totalInputTokens + totalOutputTokens,
+    totalDuration,
+    errors,
+    byProvider,
+    byModel,
+  };
+}
+
+/**
  * Store a new entry, evicting oldest if buffer is full.
  *
  * @param {object} entry
