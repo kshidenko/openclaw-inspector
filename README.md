@@ -1,5 +1,7 @@
 # oc-inspector
 
+[![npm](https://img.shields.io/npm/v/oc-inspector)](https://www.npmjs.com/package/oc-inspector) [![license](https://img.shields.io/github/license/kshidenko/openclaw-inspector)](LICENSE) [![AI Agents](https://img.shields.io/badge/AI_Agents-AGENTS.md-blue)](AGENTS.md)
+
 A debugging and monitoring tool for [OpenClaw](https://openclaw.ai) that helps you understand **where your tokens and money are going**.
 
 When working with LLM agents you often have no visibility into what's actually happening under the hood — how many tokens each request burns, which models cost the most, what system prompts look like, how tool calls are structured. `oc-inspector` sits between OpenClaw and your LLM providers as a transparent proxy, capturing every request and response in real time so you can see the full picture: token usage, costs, message flow, thinking blocks, tool calls — everything in a clear, human-readable format.
