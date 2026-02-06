@@ -144,24 +144,22 @@ export async function startServer({ port = 18800, configPath, open = false }) {
     res.end(JSON.stringify({ error: "Not found" }));
   });
 
+  // Kill any existing process on the port before we try to listen
+  try {
+    const pids = execSync(`lsof -ti :${port}`, { stdio: "pipe" }).toString().trim();
+    if (pids) {
+      console.log(`[inspector] Port ${port} in use (PID ${pids.split("\n").join(", ")}) — killing...`);
+      execSync(`lsof -ti :${port} | xargs kill -9`, { stdio: "pipe" });
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  } catch { /* no process on port — good */ }
+
   // Attach WebSocket
   initWebSocket(server);
 
-  // Start listening (auto-kill previous instance if port is busy)
+  // Start listening
   await new Promise((resolve, reject) => {
-    server.on("error", async (err) => {
-      if (err.code === "EADDRINUSE") {
-        console.log(`[inspector] Port ${port} in use — killing previous instance...`);
-        try {
-          execSync(`lsof -ti :${port} | xargs kill -9`, { stdio: "pipe" });
-        } catch { /* ignore */ }
-        // Retry after a short delay
-        await new Promise((r) => setTimeout(r, 1000));
-        server.listen(port, "127.0.0.1", resolve);
-        return;
-      }
-      reject(err);
-    });
+    server.on("error", (err) => reject(err));
     server.listen(port, "127.0.0.1", resolve);
   });
 
