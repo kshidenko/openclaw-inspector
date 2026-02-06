@@ -151,9 +151,22 @@ export function restartGateway() {
 export function enable({ configPath, openclawDir, port }) {
   const proxyBase = `http://127.0.0.1:${port}`;
 
-  // 1. Backup
+  // 0. Guard: if already enabled, refuse to double-enable
+  //    This prevents overwriting originals with proxy URLs.
+  const existingState = readState(openclawDir);
+  if (existingState?.enabled && Object.keys(existingState.originals || {}).length > 0) {
+    return {
+      ok: true,
+      message: "Already enabled",
+      providers: Object.keys(existingState.originals),
+    };
+  }
+
+  // 1. Backup — only if no existing backup (prevents overwriting clean backup)
   const backupPath = configPath + ".inspector-backup";
-  copyFileSync(configPath, backupPath);
+  if (!existsSync(backupPath)) {
+    copyFileSync(configPath, backupPath);
+  }
 
   // 2. Read config
   const config = readConfig(configPath);
@@ -169,6 +182,13 @@ export function enable({ configPath, openclawDir, port }) {
     if (cfg.baseUrl && !cfg.baseUrl.startsWith(proxyBase)) {
       originals[name] = { baseUrl: cfg.baseUrl, wasCustom: true };
       cfg.baseUrl = `${proxyBase}/${name}`;
+      enabled.push(name);
+    } else if (cfg.baseUrl && cfg.baseUrl.startsWith(proxyBase)) {
+      // Already proxied — skip but don't lose the original
+      // Try to resolve from BUILTIN_URLS
+      if (BUILTIN_URLS[name]) {
+        originals[name] = { baseUrl: BUILTIN_URLS[name], wasCustom: true };
+      }
       enabled.push(name);
     }
   }
@@ -187,7 +207,16 @@ export function enable({ configPath, openclawDir, port }) {
     enabled.push(name);
   }
 
-  // 5. Save state for restore
+  // 5. Validate: refuse to save if originals is empty (means nothing to restore)
+  if (Object.keys(originals).length === 0 && enabled.length === 0) {
+    return {
+      ok: false,
+      message: "No providers found to intercept",
+      providers: [],
+    };
+  }
+
+  // 6. Save state for restore
   writeState(openclawDir, {
     enabled: true,
     port,
@@ -196,10 +225,10 @@ export function enable({ configPath, openclawDir, port }) {
     backupPath,
   });
 
-  // 6. Write patched config
+  // 7. Write patched config
   writeConfig(configPath, config);
 
-  // 7. Restart gateway
+  // 8. Restart gateway
   const restart = restartGateway();
 
   return {
@@ -222,27 +251,49 @@ export function enable({ configPath, openclawDir, port }) {
 export function disable({ configPath, openclawDir }) {
   const state = readState(openclawDir);
 
-  if (!state || !state.originals) {
-    // Try restoring from backup
-    const backupPath = configPath + ".inspector-backup";
+  const hasOriginals = state?.originals && Object.keys(state.originals).length > 0;
+
+  if (!hasOriginals) {
+    // No valid originals — try restoring from backup file
+    const backupPath = state?.backupPath || configPath + ".inspector-backup";
     if (existsSync(backupPath)) {
-      copyFileSync(backupPath, configPath);
+      // Verify backup is clean (doesn't contain proxy URLs)
+      try {
+        const backupContent = readFileSync(backupPath, "utf-8");
+        if (!backupContent.includes("127.0.0.1:18800")) {
+          copyFileSync(backupPath, configPath);
+          removeState(openclawDir);
+          const restart = restartGateway();
+          return {
+            ok: restart.ok,
+            message: restart.ok ? "Restored from clean backup" : "Restored config but gateway restart failed",
+          };
+        }
+        // Backup is also corrupted — fall through to manual cleanup
+      } catch { /* ignore */ }
+    }
+
+    // Last resort: scan config for proxy URLs and replace with BUILTIN_URLS
+    const cleaned = cleanProxyUrls(configPath);
+    if (cleaned) {
+      removeState(openclawDir);
       const restart = restartGateway();
       return {
         ok: restart.ok,
-        message: restart.ok ? "Restored from backup" : `Restored config but gateway restart failed`,
+        message: restart.ok ? "Cleaned proxy URLs from config" : "Config cleaned but gateway restart failed",
       };
     }
-    return { ok: false, message: "No inspector state found — nothing to restore" };
+
+    removeState(openclawDir);
+    return { ok: false, message: "No inspector state or backup found — nothing to restore" };
   }
 
-  // Read current config and restore originals
+  // Happy path: restore from originals
   const config = readConfig(configPath);
   const providers = config.models?.providers || {};
 
   for (const [name, orig] of Object.entries(state.originals)) {
     if (orig.wasCustom) {
-      // Restore original baseUrl
       if (providers[name]) {
         providers[name].baseUrl = orig.baseUrl;
       }
@@ -253,9 +304,11 @@ export function disable({ configPath, openclawDir }) {
   }
 
   writeConfig(configPath, config);
-
-  // Clean up state file
   removeState(openclawDir);
+
+  // Clean up backup file
+  const backupPath = state?.backupPath || configPath + ".inspector-backup";
+  try { if (existsSync(backupPath)) unlinkSync(backupPath); } catch { /* ignore */ }
 
   const restart = restartGateway();
 
@@ -263,6 +316,46 @@ export function disable({ configPath, openclawDir }) {
     ok: restart.ok,
     message: restart.ok ? "Disabled — config restored" : "Config restored but gateway restart failed",
   };
+}
+
+/**
+ * Emergency cleanup: scan config for proxy URLs and replace with known originals.
+ *
+ * @param {string} configPath - Path to openclaw.json.
+ * @returns {boolean} True if any cleanup was performed.
+ */
+function cleanProxyUrls(configPath) {
+  try {
+    const config = readConfig(configPath);
+    const providers = config.models?.providers || {};
+    let cleaned = false;
+
+    for (const [name, cfg] of Object.entries(providers)) {
+      if (cfg.baseUrl && cfg.baseUrl.includes("127.0.0.1:18800")) {
+        if (BUILTIN_URLS[name]) {
+          // Known provider — restore builtin URL
+          cfg.baseUrl = BUILTIN_URLS[name];
+          cleaned = true;
+        } else if (cfg.models && cfg.models.length > 0) {
+          // Custom provider with models — remove the broken baseUrl
+          // Can't know original URL, but removing it is better than dead proxy
+          delete cfg.baseUrl;
+          cleaned = true;
+        } else {
+          // Empty provider entry added by inspector — remove entirely
+          delete providers[name];
+          cleaned = true;
+        }
+      }
+    }
+
+    if (cleaned) {
+      writeConfig(configPath, config);
+    }
+    return cleaned;
+  } catch {
+    return false;
+  }
 }
 
 /**
