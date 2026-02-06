@@ -8,6 +8,7 @@
  */
 
 import http from "node:http";
+import { execSync } from "node:child_process";
 import { renderDashboard } from "./dashboard.mjs";
 import { initProxy, handleProxy, updateTargets, clearEntries } from "./proxy.mjs";
 import { initWebSocket, broadcast } from "./ws.mjs";
@@ -140,12 +141,18 @@ export async function startServer({ port = 18800, configPath, open = false }) {
   // Attach WebSocket
   initWebSocket(server);
 
-  // Start listening
+  // Start listening (auto-kill previous instance if port is busy)
   await new Promise((resolve, reject) => {
-    server.on("error", (err) => {
+    server.on("error", async (err) => {
       if (err.code === "EADDRINUSE") {
-        console.error(`[inspector] Port ${port} is already in use`);
-        console.error(`[inspector] Kill the existing process: lsof -ti :${port} | xargs kill -9`);
+        console.log(`[inspector] Port ${port} in use — killing previous instance...`);
+        try {
+          execSync(`lsof -ti :${port} | xargs kill -9`, { stdio: "pipe" });
+        } catch { /* ignore */ }
+        // Retry after a short delay
+        await new Promise((r) => setTimeout(r, 1000));
+        server.listen(port, "127.0.0.1", resolve);
+        return;
       }
       reject(err);
     });
