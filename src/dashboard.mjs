@@ -101,6 +101,17 @@ pre.json{background:#161b22;padding:10px;border-radius:4px;overflow-x:auto;white
 .tool-badge{display:inline-block;padding:1px 5px;border-radius:3px;background:#bc8cff20;color:#bc8cff;font-size:11px;font-weight:600;margin-right:4px}
 .thinking{color:#8b949e;font-style:italic}
 
+/* Collapsible blocks */
+.collapsible{cursor:pointer;user-select:none}
+.collapsible::before{content:'▶ ';font-size:10px;display:inline-block;transition:transform .15s;color:#8b949e}
+.collapsible.open::before{transform:rotate(90deg)}
+.collapse-body{display:none;margin-top:6px}
+.collapsible.open+.collapse-body{display:block}
+.collapsible.open~.msg-text{display:none}
+.msg-count{font-size:10px;color:#484f58;margin-left:6px;font-weight:400}
+.tool-name{color:#d2a8ff;font-weight:600}
+.tool-id{color:#484f58;font-size:10px;margin-left:4px}
+
 /* Empty state */
 .empty{text-align:center;padding:60px;color:#484f58}
 .empty h2{font-size:16px;margin-bottom:8px;color:#8b949e}
@@ -221,22 +232,29 @@ function toggleDetail(id) {
   }
 }
 
+/* ── Collapsible toggle ── */
+function toggleCollapse(el) {
+  el.classList.toggle('open');
+}
+
+/* ── Unique counter for collapsible IDs ── */
+let _cid = 0;
+function cid() { return 'c' + (++_cid); }
+
 /* ── Render detail panel ── */
 function renderDetail(entry) {
   const det = document.getElementById('det-'+entry.id);
   if (!det) return;
   det.dataset.loaded = '1';
 
-  // Build messages from request body
+  // ── Build messages from request body ──
   let messagesHtml = '';
   const req = entry.reqBody;
   if (req && typeof req === 'object') {
-    // System prompt
     if (req.system) {
       const sys = Array.isArray(req.system) ? req.system.map(b=>b.text||'').join('\\n') : String(req.system);
-      messagesHtml += renderMsg('system', sys);
+      messagesHtml += renderCollapsibleMsg('system', 'system', sys);
     }
-    // Messages array
     if (Array.isArray(req.messages)) {
       for (const m of req.messages) {
         messagesHtml += renderMessage(m);
@@ -244,48 +262,33 @@ function renderDetail(entry) {
     }
   }
 
-  // Response content
+  // ── Response content (from SSE events or buffered body) ──
   let responseHtml = '';
-  const res = entry.resBody;
-  if (typeof res === 'object' && res !== null) {
-    // Anthropic format
-    if (Array.isArray(res.content)) {
-      for (const block of res.content) {
-        if (block.type === 'text') responseHtml += renderMsg('assistant', block.text);
-        else if (block.type === 'thinking') responseHtml += '<div class="msg assistant"><div class="msg-role assistant">thinking</div><div class="msg-text thinking">'+escHtml(block.thinking||'')+'</div></div>';
-        else if (block.type === 'tool_use') responseHtml += '<div class="msg tool"><div class="msg-role tool"><span class="tool-badge">tool_call</span> '+escHtml(block.name)+'</div><pre class="json">'+escHtml(JSON.stringify(block.input,null,2))+'</pre></div>';
+  if (Array.isArray(entry.sseEvents) && entry.sseEvents.length > 0) {
+    responseHtml = renderSSEResponse(entry.sseEvents, entry.provider);
+  } else {
+    const res = entry.resBody;
+    if (typeof res === 'object' && res !== null) {
+      if (Array.isArray(res.content)) {
+        responseHtml = renderAnthropicBlocks(res.content);
+      } else if (Array.isArray(res.choices)) {
+        responseHtml = renderOpenAIChoices(res.choices);
       }
     }
-    // OpenAI format
-    else if (Array.isArray(res.choices)) {
-      for (const c of res.choices) {
-        const msg = c.message || c.delta || {};
-        if (msg.content) responseHtml += renderMsg('assistant', msg.content);
-        if (Array.isArray(msg.tool_calls)) {
-          for (const tc of msg.tool_calls) {
-            const fn = tc.function || {};
-            let args = fn.arguments || '{}';
-            try { args = JSON.stringify(JSON.parse(args),null,2); } catch{}
-            responseHtml += '<div class="msg tool"><div class="msg-role tool"><span class="tool-badge">tool_call</span> '+escHtml(fn.name||'?')+'</div><pre class="json">'+escHtml(args)+'</pre></div>';
-          }
-        }
-      }
-    }
-  }
-  if (typeof res === 'string' && res.includes('data:')) {
-    responseHtml += '<div class="msg assistant"><div class="msg-role assistant">streaming response</div><div class="msg-text" style="color:#8b949e">(SSE stream — '+Math.round((entry.resSize||0)/1024)+'KB captured)</div></div>';
   }
 
   det.innerHTML = \`
     <div class="tabs">
-      <div class="tab active" onclick="switchTab(this,'msgs-\${entry.id}')">Messages</div>
-      <div class="tab" onclick="switchTab(this,'req-\${entry.id}')">Request</div>
+      <div class="tab active" onclick="switchTab(this,'msgs-\${entry.id}')">Messages (\${Array.isArray(req?.messages)?req.messages.length:0})</div>
       <div class="tab" onclick="switchTab(this,'res-\${entry.id}')">Response</div>
+      <div class="tab" onclick="switchTab(this,'req-\${entry.id}')">Request JSON</div>
+      <div class="tab" onclick="switchTab(this,'sse-\${entry.id}')">SSE Events (\${entry.sseEvents?.length||0})</div>
       <div class="tab" onclick="switchTab(this,'hdrs-\${entry.id}')">Headers</div>
     </div>
     <div class="tab-content active" id="msgs-\${entry.id}">\${messagesHtml || '<p style="color:#484f58">No messages</p>'}</div>
+    <div class="tab-content" id="res-\${entry.id}">\${responseHtml || '<p style="color:#484f58">No response content</p>'}</div>
     <div class="tab-content" id="req-\${entry.id}"><pre class="json">\${escHtml(typeof req==='object'?JSON.stringify(req,null,2):String(req||''))}</pre></div>
-    <div class="tab-content" id="res-\${entry.id}">\${responseHtml || '<pre class="json">'+escHtml(typeof res==='object'?JSON.stringify(res,null,2):String(res||'(empty)'))+'</pre>'}</div>
+    <div class="tab-content" id="sse-\${entry.id}">\${renderSSEEventsTab(entry.sseEvents)}</div>
     <div class="tab-content" id="hdrs-\${entry.id}">
       <h4 style="color:#8b949e;margin-bottom:6px">Request Headers</h4>
       <pre class="json">\${escHtml(JSON.stringify(entry.reqHeaders||{},null,2))}</pre>
@@ -295,41 +298,212 @@ function renderDetail(entry) {
   \`;
 }
 
+/* ── Reconstruct response from Anthropic SSE events ── */
+function renderSSEResponse(events, provider) {
+  // Detect Anthropic vs OpenAI
+  const isAnthropic = events.some(e => e.type === 'message_start' || e.type === 'content_block_start');
+  if (isAnthropic) return renderAnthropicSSE(events);
+  return renderOpenAISSE(events);
+}
+
+function renderAnthropicSSE(events) {
+  const blocks = []; // { type, text/thinking/name/input }
+  let currentBlock = null;
+
+  for (const evt of events) {
+    if (evt.type === 'content_block_start' && evt.content_block) {
+      currentBlock = { type: evt.content_block.type, text: '', thinking: '', name: evt.content_block.name || '', input: '', id: evt.content_block.id || '' };
+      blocks.push(currentBlock);
+    }
+    if (evt.type === 'content_block_delta' && evt.delta && currentBlock) {
+      if (evt.delta.type === 'text_delta') currentBlock.text += evt.delta.text || '';
+      if (evt.delta.type === 'thinking_delta') currentBlock.thinking += evt.delta.thinking || '';
+      if (evt.delta.type === 'input_json_delta') currentBlock.input += evt.delta.partial_json || '';
+    }
+    if (evt.type === 'content_block_stop') currentBlock = null;
+  }
+
+  let html = '';
+  for (const b of blocks) {
+    if (b.type === 'thinking') {
+      html += renderCollapsibleMsg('assistant', '🧠 thinking', b.thinking, 'thinking');
+    } else if (b.type === 'text') {
+      html += renderCollapsibleMsg('assistant', 'assistant', b.text);
+    } else if (b.type === 'tool_use') {
+      let args = b.input;
+      try { args = JSON.stringify(JSON.parse(args), null, 2); } catch {}
+      html += renderToolCall(b.name, args, b.id);
+    }
+  }
+  return html || '<p style="color:#484f58">Empty response</p>';
+}
+
+function renderOpenAISSE(events) {
+  let content = '';
+  let reasoningContent = '';
+  const toolCalls = {}; // index -> { name, args }
+
+  for (const evt of events) {
+    if (!evt.choices || !evt.choices[0]) continue;
+    const d = evt.choices[0].delta || {};
+    if (d.content) content += d.content;
+    if (d.reasoning_content) reasoningContent += d.reasoning_content;
+    if (Array.isArray(d.tool_calls)) {
+      for (const tc of d.tool_calls) {
+        const idx = tc.index ?? 0;
+        if (!toolCalls[idx]) toolCalls[idx] = { name: '', args: '' };
+        if (tc.function?.name) toolCalls[idx].name = tc.function.name;
+        if (tc.function?.arguments) toolCalls[idx].args += tc.function.arguments;
+      }
+    }
+  }
+
+  let html = '';
+  if (reasoningContent) {
+    html += renderCollapsibleMsg('assistant', '🧠 reasoning', reasoningContent, 'thinking');
+  }
+  if (content) {
+    html += renderCollapsibleMsg('assistant', 'assistant', content);
+  }
+  for (const [, tc] of Object.entries(toolCalls)) {
+    let args = tc.args;
+    try { args = JSON.stringify(JSON.parse(args), null, 2); } catch {}
+    html += renderToolCall(tc.name, args);
+  }
+  return html || '<p style="color:#484f58">Empty response</p>';
+}
+
+/* ── Render Anthropic content blocks (non-streaming) ── */
+function renderAnthropicBlocks(blocks) {
+  let html = '';
+  for (const b of blocks) {
+    if (b.type === 'text') html += renderCollapsibleMsg('assistant', 'assistant', b.text);
+    else if (b.type === 'thinking') html += renderCollapsibleMsg('assistant', '🧠 thinking', b.thinking || '', 'thinking');
+    else if (b.type === 'tool_use') html += renderToolCall(b.name, JSON.stringify(b.input||{},null,2), b.id);
+  }
+  return html;
+}
+
+/* ── Render OpenAI choices (non-streaming) ── */
+function renderOpenAIChoices(choices) {
+  let html = '';
+  for (const c of choices) {
+    const msg = c.message || c.delta || {};
+    if (msg.reasoning_content) html += renderCollapsibleMsg('assistant', '🧠 reasoning', msg.reasoning_content, 'thinking');
+    if (msg.content) html += renderCollapsibleMsg('assistant', 'assistant', msg.content);
+    if (Array.isArray(msg.tool_calls)) {
+      for (const tc of msg.tool_calls) {
+        const fn = tc.function || {};
+        let args = fn.arguments || '{}';
+        try { args = JSON.stringify(JSON.parse(args),null,2); } catch{}
+        html += renderToolCall(fn.name||'?', args, tc.id);
+      }
+    }
+  }
+  return html;
+}
+
+/* ── Render SSE Events tab ── */
+function renderSSEEventsTab(events) {
+  if (!events || !events.length) return '<p style="color:#484f58">No SSE events</p>';
+  let html = '';
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i];
+    const evtType = e.type || e.object || 'chunk';
+    const id = cid();
+    html += '<div style="margin-bottom:4px">';
+    html += '<div class="collapsible" onclick="toggleCollapse(this)"><span style="color:#f78166;font-size:11px;font-weight:600">'+escHtml(evtType)+'</span><span class="msg-count">#'+(i+1)+'</span></div>';
+    html += '<div class="collapse-body"><pre class="json" style="max-height:300px">'+escHtml(JSON.stringify(e,null,2))+'</pre></div>';
+    html += '</div>';
+  }
+  return html;
+}
+
+/* ── Render a message (from request messages array) ── */
 function renderMessage(m) {
   const role = m.role || 'unknown';
-  if (typeof m.content === 'string') return renderMsg(role, m.content);
+
+  // Simple string content
+  if (typeof m.content === 'string') {
+    if (role === 'tool') return renderToolResult(m.content, m.tool_use_id);
+    return renderCollapsibleMsg(role, role, m.content);
+  }
+
+  // Array of content blocks (Anthropic)
   if (Array.isArray(m.content)) {
     let html = '';
     for (const block of m.content) {
-      if (block.type === 'text') html += renderMsg(role, block.text);
-      else if (block.type === 'image_url' || block.type === 'image') html += renderMsg(role, '[image]');
-      else if (block.type === 'tool_use') html += '<div class="msg tool"><div class="msg-role tool"><span class="tool-badge">tool_call</span> '+escHtml(block.name||'?')+'</div><pre class="json">'+escHtml(JSON.stringify(block.input||{},null,2))+'</pre></div>';
-      else if (block.type === 'tool_result') html += '<div class="msg toolResult"><div class="msg-role toolResult"><span class="tool-badge">tool_result</span> '+escHtml(block.tool_use_id||'')+'</div><div class="msg-text">'+escHtml(typeof block.content==='string'?block.content:JSON.stringify(block.content))+'</div></div>';
-      else if (block.type === 'thinking') html += '<div class="msg assistant"><div class="msg-role assistant">thinking</div><div class="msg-text thinking">'+escHtml(block.thinking||'').slice(0,500)+(block.thinking?.length>500?'...':'')+'</div></div>';
+      if (block.type === 'text') html += renderCollapsibleMsg(role, role, block.text);
+      else if (block.type === 'image_url' || block.type === 'image') html += renderSimpleMsg(role, '[📷 image]');
+      else if (block.type === 'tool_use') html += renderToolCall(block.name||'?', JSON.stringify(block.input||{},null,2), block.id);
+      else if (block.type === 'tool_result') html += renderToolResult(typeof block.content==='string'?block.content:JSON.stringify(block.content), block.tool_use_id);
+      else if (block.type === 'thinking') html += renderCollapsibleMsg('assistant', '🧠 thinking', block.thinking||'', 'thinking');
     }
     return html;
   }
-  // tool_calls in OpenAI format
+
+  // OpenAI tool_calls
   if (m.tool_calls) {
-    let html = renderMsg(role, m.content || '');
+    let html = m.content ? renderCollapsibleMsg(role, role, m.content) : '';
     for (const tc of m.tool_calls) {
       const fn = tc.function || {};
       let args = fn.arguments || '{}';
       try { args = JSON.stringify(JSON.parse(args),null,2); } catch{}
-      html += '<div class="msg tool"><div class="msg-role tool"><span class="tool-badge">tool_call</span> '+escHtml(fn.name||'?')+'</div><pre class="json">'+escHtml(args)+'</pre></div>';
+      html += renderToolCall(fn.name||'?', args, tc.id);
     }
     return html;
   }
-  // toolResult
+
+  // Tool result (role=tool)
   if (role === 'tool') {
-    return '<div class="msg toolResult"><div class="msg-role toolResult"><span class="tool-badge">tool_result</span></div><div class="msg-text">'+escHtml(typeof m.content==='string'?m.content:JSON.stringify(m.content))+'</div></div>';
+    return renderToolResult(typeof m.content==='string'?m.content:JSON.stringify(m.content), m.tool_call_id);
   }
-  return renderMsg(role, JSON.stringify(m.content));
+
+  return renderCollapsibleMsg(role, role, JSON.stringify(m.content));
 }
 
-function renderMsg(role, text) {
+/* ── Collapsible message block ── */
+function renderCollapsibleMsg(roleClass, label, text, extraClass) {
+  const r = roleClass === 'tool' ? 'toolResult' : roleClass;
+  const preview = (text||'').slice(0, 120).replace(/\\n/g, ' ');
+  const len = (text||'').length;
+  const needsCollapse = len > 200;
+  const cls = extraClass ? ' '+extraClass : '';
+
+  if (!needsCollapse) {
+    return '<div class="msg '+r+'"><div class="msg-role '+r+'">'+escHtml(label)+'</div><div class="msg-text'+cls+'">'+escHtml(text||'')+'</div></div>';
+  }
+
+  return '<div class="msg '+r+'">'
+    + '<div class="msg-role '+r+' collapsible" onclick="toggleCollapse(this)">'+escHtml(label)+'<span class="msg-count">'+fmtTokens(len)+' chars</span></div>'
+    + '<div class="collapse-body"><div class="msg-text'+cls+'">'+escHtml(text||'')+'</div></div>'
+    + '<div class="msg-text" style="color:#484f58;font-size:11px;max-height:1.5em;overflow:hidden">'+escHtml(preview)+'…</div>'
+    + '</div>';
+}
+
+/* ── Simple (non-collapsible) message ── */
+function renderSimpleMsg(role, text) {
   const r = role === 'tool' ? 'toolResult' : role;
   return '<div class="msg '+r+'"><div class="msg-role '+r+'">'+escHtml(role)+'</div><div class="msg-text">'+escHtml(text||'')+'</div></div>';
+}
+
+/* ── Tool call block ── */
+function renderToolCall(name, args, id) {
+  return '<div class="msg tool">'
+    + '<div class="msg-role tool collapsible" onclick="toggleCollapse(this)"><span class="tool-badge">⚡ tool_call</span> <span class="tool-name">'+escHtml(name)+'</span>'+(id?'<span class="tool-id">'+escHtml(id)+'</span>':'')+'</div>'
+    + '<div class="collapse-body"><pre class="json">'+escHtml(args)+'</pre></div>'
+    + '</div>';
+}
+
+/* ── Tool result block ── */
+function renderToolResult(content, toolId) {
+  const preview = (content||'').slice(0, 100).replace(/\\n/g, ' ');
+  const len = (content||'').length;
+  return '<div class="msg toolResult">'
+    + '<div class="msg-role toolResult collapsible" onclick="toggleCollapse(this)"><span class="tool-badge">📋 tool_result</span>'+(toolId?' <span class="tool-id">'+escHtml(toolId)+'</span>':'')+'<span class="msg-count">'+fmtTokens(len)+' chars</span></div>'
+    + '<div class="collapse-body"><div class="msg-text">'+escHtml(content||'')+'</div></div>'
+    + '<div class="msg-text" style="color:#484f58;font-size:11px;max-height:1.5em;overflow:hidden">'+escHtml(preview)+(len>100?'…':'')+'</div>'
+    + '</div>';
 }
 
 function switchTab(el, contentId) {
