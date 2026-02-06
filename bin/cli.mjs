@@ -39,10 +39,10 @@ const opts = parseArgs(args);
 
 if (opts.help) {
   console.log(`
-  @kshidenko/openclaw-inspector — Real-time API traffic inspector for OpenClaw
+  oc-inspector — Real-time API traffic inspector for OpenClaw
 
   Usage:
-    npx @kshidenko/openclaw-inspector [options]
+    npx oc-inspector [options]
 
   Options:
     --port <number>   Port for the inspector proxy (default: 18800)

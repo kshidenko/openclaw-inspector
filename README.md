@@ -1,11 +1,11 @@
-# @kshidenko/openclaw-inspector
+# oc-inspector
 
 Real-time API traffic inspector for [OpenClaw](https://openclaw.ai). Intercepts LLM provider requests (Anthropic, OpenAI, BytePlus, Ollama, and more), shows token usage, costs, and message flow in a live web dashboard.
 
 ## Quick Start
 
 ```bash
-npx @kshidenko/openclaw-inspector
+npx oc-inspector
 ```
 
 This starts the inspector proxy on port 18800 and opens a web dashboard.
@@ -24,16 +24,16 @@ This starts the inspector proxy on port 18800 and opens a web dashboard.
 
 ```bash
 # Start with defaults (port 18800)
-npx @kshidenko/openclaw-inspector
+npx oc-inspector
 
 # Custom port
-npx @kshidenko/openclaw-inspector --port 9000
+npx oc-inspector --port 9000
 
 # Auto-open browser
-npx @kshidenko/openclaw-inspector --open
+npx oc-inspector --open
 
 # Custom OpenClaw config path
-npx @kshidenko/openclaw-inspector --config /path/to/openclaw.json
+npx oc-inspector --config /path/to/openclaw.json
 ```
 
 ## How It Works
