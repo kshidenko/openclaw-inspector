@@ -451,8 +451,14 @@ async function runServe(opts) {
     process.exit(1);
   }
 
-  process.on("SIGINT", () => { console.log("\n  Shutting down..."); process.exit(0); });
-  process.on("SIGTERM", () => { console.log("\n  Shutting down (SIGTERM)..."); process.exit(0); });
+  const gracefulShutdown = async (signal) => {
+    console.log(`\n  Shutting down (${signal})...`);
+    await restoreConfigOnExit(opts);
+    process.exit(0);
+  };
+
+  process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+  process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 }
 
 /**
@@ -485,8 +491,36 @@ async function runForeground(opts) {
     process.exit(1);
   }
 
-  process.on("SIGINT", () => { console.log("\n  Shutting down..."); process.exit(0); });
-  process.on("SIGTERM", () => process.exit(0));
+  const gracefulShutdown = async (signal) => {
+    console.log(`\n  Shutting down (${signal})...`);
+    await restoreConfigOnExit(opts);
+    process.exit(0);
+  };
+
+  process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+  process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+}
+
+/**
+ * Restore original OpenClaw config on process exit.
+ * Used by graceful shutdown handlers in _serve and run modes.
+ *
+ * @param {object} cmdOpts - CLI opts (for config path).
+ */
+async function restoreConfigOnExit(cmdOpts = {}) {
+  try {
+    const { detect, disable, status } = await import("../src/config.mjs");
+    const oc = detect(cmdOpts.config);
+    if (oc.exists) {
+      const st = status(oc.dir);
+      if (st.enabled) {
+        const result = disable({ configPath: oc.configPath, openclawDir: oc.dir });
+        console.log(`  \x1b[32m✓\x1b[0m Config restored — ${result.message}`);
+      }
+    }
+  } catch {
+    // Best-effort — don't block exit
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
