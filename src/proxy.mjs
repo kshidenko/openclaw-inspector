@@ -17,6 +17,7 @@ import {
   parseGenericUsage,
   accumulateStreamUsage,
 } from "./usage-parsers.mjs";
+import { calculateCost } from "./pricing.mjs";
 
 /** Maximum entries kept in the circular buffer. */
 const MAX_ENTRIES = 500;
@@ -67,6 +68,7 @@ export function getStats() {
   let totalOutputTokens = 0;
   let totalCachedTokens = 0;
   let totalDuration = 0;
+  let totalCost = 0;
   let errors = 0;
 
   for (const id of entryOrder) {
@@ -75,6 +77,8 @@ export function getStats() {
     totalRequests++;
     if (e.state === "error") errors++;
     if (e.duration) totalDuration += e.duration;
+    const cost = e.cost || 0;
+    totalCost += cost;
 
     const u = e.usage;
     if (!u) continue;
@@ -87,21 +91,23 @@ export function getStats() {
 
     // Per provider
     const p = e.provider || "unknown";
-    if (!byProvider[p]) byProvider[p] = { requests: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, errors: 0 };
+    if (!byProvider[p]) byProvider[p] = { requests: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, cost: 0, errors: 0 };
     byProvider[p].requests++;
     byProvider[p].inputTokens += inp;
     byProvider[p].outputTokens += out;
     byProvider[p].cachedTokens += cached;
+    byProvider[p].cost += cost;
     if (e.state === "error") byProvider[p].errors++;
 
     // Per model
     const m = u.model || e.reqModel || "?";
     if (m !== "?") {
-      if (!byModel[m]) byModel[m] = { requests: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, provider: p };
+      if (!byModel[m]) byModel[m] = { requests: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, cost: 0, provider: p };
       byModel[m].requests++;
       byModel[m].inputTokens += inp;
       byModel[m].outputTokens += out;
       byModel[m].cachedTokens += cached;
+      byModel[m].cost += cost;
     }
   }
 
@@ -112,6 +118,7 @@ export function getStats() {
     totalCachedTokens,
     totalTokens: totalInputTokens + totalOutputTokens,
     totalDuration,
+    totalCost,
     errors,
     byProvider,
     byModel,
@@ -176,6 +183,7 @@ function entrySummary(entry) {
     duration: entry.duration,
     model: entry.usage?.model || entry.reqModel || "?",
     usage: entry.usage || null,
+    cost: entry.cost || 0,
   };
 }
 
@@ -362,6 +370,7 @@ function handleSSE(proxyRes, res, entry, provider) {
     entry.state = "done";
     entry.sseEvents = events;
     entry.usage = accumulateStreamUsage(events, apiFamily === "anthropic" ? "anthropic" : "openai");
+    entry.cost = calculateCost(entry.usage?.model || entry.reqModel, entry.usage);
 
     broadcastFn?.("update", entrySummary(entry));
   });
@@ -403,6 +412,7 @@ function handleBuffered(proxyRes, res, entry, provider) {
       const json = JSON.parse(body.toString("utf-8"));
       entry.resBody = json;
       entry.usage = parseGenericUsage(json);
+      entry.cost = calculateCost(entry.usage?.model || entry.reqModel, entry.usage);
     } catch {
       entry.resBody = body.toString("utf-8");
     }

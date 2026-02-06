@@ -65,6 +65,7 @@ a{color:#58a6ff;text-decoration:none}
 .model-name{color:#79c0ff;font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tokens{font-size:11px;color:#8b949e;white-space:nowrap}
 .tokens b{color:#c9d1d9}
+.cost{font-size:11px;color:#3fb950;white-space:nowrap;width:65px;text-align:right;font-weight:600}
 .duration{font-size:11px;color:#8b949e;width:60px;text-align:right}
 .status-code{font-size:11px;font-weight:600;width:28px;text-align:center}
 .status-code.s2{color:#3fb950}
@@ -167,6 +168,7 @@ function fmtTs(ms) {
 }
 function fmtDur(ms) { return ms != null ? ms < 1000 ? ms+'ms' : (ms/1000).toFixed(1)+'s' : '...'; }
 function fmtTokens(n) { return n >= 1000 ? (n/1000).toFixed(1)+'k' : String(n); }
+function fmtCost(c) { if (!c || c === 0) return ''; return c < 0.01 ? '$'+c.toFixed(4) : '$'+c.toFixed(3); }
 function statusClass(s) { if (!s) return 'pending'; return 's'+String(s)[0]; }
 function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
@@ -174,7 +176,7 @@ function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;'
 function updateStats() {
   document.getElementById('statReqs').textContent = totalReqs;
   document.getElementById('statTokens').textContent = fmtTokens(totalTokens);
-  document.getElementById('statCost').textContent = '$' + totalCost.toFixed(4);
+  document.getElementById('statCost').textContent = totalCost < 0.01 ? '$' + totalCost.toFixed(4) : '$' + totalCost.toFixed(3);
 }
 
 /* ── Create entry element ── */
@@ -189,6 +191,7 @@ function createEntryEl(e) {
       <span class="model-name">\${escHtml(e.model||'?')}</span>
       <span class="path">\${escHtml(e.path)}</span>
       <span class="tokens" id="tok-\${e.id}">\${renderTokens(e.usage)}</span>
+      <span class="cost" id="cost-\${e.id}">\${fmtCost(e.cost)}</span>
       <span class="status-code \${statusClass(e.status)}" id="st-\${e.id}">\${e.status||'...'}</span>
       <span class="duration" id="dur-\${e.id}">\${fmtDur(e.duration)}</span>
       <span class="timestamp">\${fmtTs(e.timestamp)}</span>
@@ -208,9 +211,11 @@ function renderTokens(u) {
 /* ── Update entry ── */
 function updateEntryEl(e) {
   const tokEl = document.getElementById('tok-'+e.id);
+  const costEl = document.getElementById('cost-'+e.id);
   const stEl = document.getElementById('st-'+e.id);
   const durEl = document.getElementById('dur-'+e.id);
   if (tokEl) tokEl.innerHTML = renderTokens(e.usage);
+  if (costEl) costEl.textContent = fmtCost(e.cost);
   if (stEl) { stEl.textContent = e.status||'...'; stEl.className = 'status-code '+statusClass(e.status); }
   if (durEl) durEl.textContent = fmtDur(e.duration);
 }
@@ -544,17 +549,20 @@ function connect() {
         if (msg.entry.usage) {
           totalTokens += msg.entry.usage.totalTokens || 0;
         }
+        totalCost += msg.entry.cost || 0;
         updateStats();
       } else {
         container.appendChild(el);
         totalReqs++;
         if (msg.entry.usage) totalTokens += msg.entry.usage.totalTokens || 0;
+        totalCost += msg.entry.cost || 0;
       }
     } else if (msg.type === 'update') {
       updateEntryEl(msg.entry);
       if (msg.entry.usage) {
         totalTokens += msg.entry.usage.totalTokens || 0;
       }
+      totalCost += msg.entry.cost || 0;
       updateStats();
     } else if (msg.type === 'detail') {
       renderDetail(msg.entry);

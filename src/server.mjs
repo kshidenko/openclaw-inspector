@@ -14,6 +14,7 @@ import { initProxy, handleProxy, updateTargets, clearEntries, getStats } from ".
 import { initWebSocket, broadcast } from "./ws.mjs";
 import { detect, readConfig, enable, disable, status } from "./config.mjs";
 import { buildTargetMap, BUILTIN_URLS } from "./providers.mjs";
+import { initPricing } from "./pricing.mjs";
 
 /**
  * Start the inspector server.
@@ -57,6 +58,9 @@ export async function startServer({ port = 18800, configPath, open = false }) {
 
   const targets = buildTargetMap(oc.dir, config.models?.providers || {}, inspectorState);
   console.log(`[inspector] Detected providers: ${[...targets.keys()].join(", ")}`);
+
+  // Initialize pricing from config
+  initPricing(config);
 
   // Initialize proxy
   initProxy(targets, broadcast);

@@ -242,6 +242,7 @@ function printStats(s) {
   if (s.totalCachedTokens > 0) {
     console.log(`  \x1b[1mCached:\x1b[0m      ${fmtNum(s.totalCachedTokens)}`);
   }
+  console.log(`  \x1b[1mCost:\x1b[0m        \x1b[32m$${(s.totalCost || 0).toFixed(4)}\x1b[0m`);
   if (s.totalDuration > 0) {
     const avgMs = Math.round(s.totalDuration / s.totalRequests);
     console.log(`  \x1b[1mAvg latency:\x1b[0m ${avgMs}ms`);
@@ -254,9 +255,10 @@ function printStats(s) {
     console.log("  \x1b[1mBy Provider\x1b[0m");
     console.log("  " + "─".repeat(50));
     const maxTokens = Math.max(...providers.map(([, v]) => v.inputTokens + v.outputTokens));
-    for (const [name, v] of providers.sort((a, b) => (b[1].inputTokens + b[1].outputTokens) - (a[1].inputTokens + a[1].outputTokens))) {
+    for (const [name, v] of providers.sort((a, b) => (b[1].cost || 0) - (a[1].cost || 0) || (b[1].inputTokens + b[1].outputTokens) - (a[1].inputTokens + a[1].outputTokens))) {
       const total = v.inputTokens + v.outputTokens;
-      console.log(`  \x1b[36m${name.padEnd(18)}\x1b[0m ${bar("", total, maxTokens)}  (${v.requests} reqs)`);
+      const costStr = v.cost > 0 ? `  \x1b[32m$${v.cost.toFixed(4)}\x1b[0m` : "";
+      console.log(`  \x1b[36m${name.padEnd(18)}\x1b[0m ${bar("", total, maxTokens)}  (${v.requests} reqs)${costStr}`);
     }
   }
 
@@ -267,10 +269,11 @@ function printStats(s) {
     console.log("  \x1b[1mBy Model\x1b[0m");
     console.log("  " + "─".repeat(50));
     const maxTokens = Math.max(...models.map(([, v]) => v.inputTokens + v.outputTokens));
-    for (const [name, v] of models.sort((a, b) => (b[1].inputTokens + b[1].outputTokens) - (a[1].inputTokens + a[1].outputTokens))) {
+    for (const [name, v] of models.sort((a, b) => (b[1].cost || 0) - (a[1].cost || 0) || (b[1].inputTokens + b[1].outputTokens) - (a[1].inputTokens + a[1].outputTokens))) {
       const total = v.inputTokens + v.outputTokens;
       const shortName = name.length > 28 ? name.slice(0, 27) + "…" : name;
-      console.log(`  \x1b[33m${shortName.padEnd(30)}\x1b[0m ${bar("", total, maxTokens)}  (${v.requests} reqs)`);
+      const costStr = v.cost > 0 ? `  \x1b[32m$${v.cost.toFixed(4)}\x1b[0m` : "";
+      console.log(`  \x1b[33m${shortName.padEnd(30)}\x1b[0m ${bar("", total, maxTokens)}  (${v.requests} reqs)${costStr}`);
     }
   }
 
