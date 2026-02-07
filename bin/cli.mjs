@@ -350,7 +350,31 @@ async function runDaemonStop(silent = false, cmdOpts = {}) {
 
   if (st.alive) {
     try {
+      // 2a. Send SIGTERM for graceful shutdown
       process.kill(st.pid, "SIGTERM");
+
+      // 2b. Wait up to 5 seconds for the process to exit
+      let died = false;
+      for (let i = 0; i < 10; i++) {
+        await new Promise((r) => setTimeout(r, 500));
+        try {
+          process.kill(st.pid, 0); // probe — throws ESRCH if dead
+        } catch {
+          died = true;
+          break;
+        }
+      }
+
+      // 2c. Escalate to SIGKILL if still alive
+      if (!died) {
+        try {
+          process.kill(st.pid, "SIGKILL");
+          if (!silent) {
+            console.log(`  \x1b[33m⚠\x1b[0m  Process didn't exit after SIGTERM — sent SIGKILL (PID ${st.pid})`);
+          }
+        } catch { /* already dead */ }
+      }
+
       if (!silent) {
         console.log(`  \x1b[32m✓\x1b[0m Stopped inspector (PID ${st.pid})`);
         console.log("");
@@ -463,8 +487,17 @@ async function runServe(opts) {
   }
 
   const gracefulShutdown = async (signal) => {
+    // Force-exit after 5s so we never leave a zombie process
+    const forceTimer = setTimeout(() => {
+      console.log("  \x1b[33m⚠\x1b[0m  Shutdown timed out — forcing exit");
+      cleanupPidFile();
+      process.exit(1);
+    }, 5000);
+    forceTimer.unref();
+
     console.log(`\n  Shutting down (${signal})...`);
     await restoreConfigOnExit(opts);
+    cleanupPidFile();
     process.exit(0);
   };
 
@@ -503,13 +536,30 @@ async function runForeground(opts) {
   }
 
   const gracefulShutdown = async (signal) => {
+    // Force-exit after 5s so we never leave a zombie process
+    const forceTimer = setTimeout(() => {
+      console.log("  \x1b[33m⚠\x1b[0m  Shutdown timed out — forcing exit");
+      cleanupPidFile();
+      process.exit(1);
+    }, 5000);
+    forceTimer.unref();
+
     console.log(`\n  Shutting down (${signal})...`);
     await restoreConfigOnExit(opts);
+    cleanupPidFile();
     process.exit(0);
   };
 
   process.on("SIGINT", () => gracefulShutdown("SIGINT"));
   process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+}
+
+/**
+ * Remove the daemon PID file on exit.
+ * Called during graceful shutdown so stop/status don't see stale PIDs.
+ */
+function cleanupPidFile() {
+  try { unlinkSync(PID_FILE); } catch { /* ignore */ }
 }
 
 /**

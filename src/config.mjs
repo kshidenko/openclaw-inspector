@@ -14,6 +14,16 @@ import { homedir } from "node:os";
 import { execSync } from "node:child_process";
 import { BUILTIN_URLS, detectActiveProviders } from "./providers.mjs";
 
+/**
+ * Regex matching inspector proxy URLs on localhost (any port).
+ *
+ * Used to detect whether a baseUrl has been patched by the inspector,
+ * regardless of which port was configured at the time.
+ *
+ * @type {RegExp}
+ */
+const PROXY_URL_RE = /127\.0\.0\.1:\d+/;
+
 /** Default OpenClaw state directory. */
 const DEFAULT_OPENCLAW_DIR = join(homedir(), ".openclaw");
 
@@ -260,7 +270,7 @@ export function disable({ configPath, openclawDir }) {
       // Verify backup is clean (doesn't contain proxy URLs)
       try {
         const backupContent = readFileSync(backupPath, "utf-8");
-        if (!backupContent.includes("127.0.0.1:3000")) {
+        if (!PROXY_URL_RE.test(backupContent)) {
           copyFileSync(backupPath, configPath);
           removeState(openclawDir);
           const restart = restartGateway();
@@ -331,7 +341,7 @@ function cleanProxyUrls(configPath) {
     let cleaned = false;
 
     for (const [name, cfg] of Object.entries(providers)) {
-      if (cfg.baseUrl && cfg.baseUrl.includes("127.0.0.1:3000")) {
+      if (cfg.baseUrl && PROXY_URL_RE.test(cfg.baseUrl)) {
         if (BUILTIN_URLS[name]) {
           // Known provider — restore builtin URL
           cfg.baseUrl = BUILTIN_URLS[name];
