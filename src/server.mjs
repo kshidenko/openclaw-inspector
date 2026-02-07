@@ -21,16 +21,16 @@ import { initHistory, getRecent, getDay, listDates } from "./history.mjs";
  * Start the inspector server.
  *
  * @param {object} options
- * @param {number} options.port - Port to listen on (default 18800).
+ * @param {number} options.port - Port to listen on (default 3000).
  * @param {string} [options.configPath] - Custom path to openclaw.json.
  * @param {boolean} [options.open] - Open browser on start.
  * @returns {Promise<{ server: http.Server, url: string, openclawDir: string }>}
  *
  * Example:
- *   >>> const { url } = await startServer({ port: 18800 });
+ *   >>> const { url } = await startServer({ port: 3000 });
  *   >>> console.log("Inspector at", url);
  */
-export async function startServer({ port = 18800, configPath, open = false }) {
+export async function startServer({ port = 3000, configPath, open = false }) {
   // Detect OpenClaw
   const oc = detect(configPath);
   if (!oc.exists) {

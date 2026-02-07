@@ -33,7 +33,7 @@ Use it to:
 npx oc-inspector
 ```
 
-Starts the inspector daemon in background on `localhost:18800` with a live web dashboard.
+Starts the inspector daemon in background on `localhost:3000` with a live web dashboard.
 
 ---
 
@@ -112,6 +112,24 @@ oc-inspector stop
 oc-inspector restart
 ```
 
+### Autostart (run on login/boot)
+
+```bash
+# Install autostart service (launchd on macOS, systemd on Linux)
+oc-inspector install
+
+# Install with custom port
+oc-inspector install --port 9000
+
+# Remove autostart
+oc-inspector uninstall
+
+# Check autostart status
+oc-inspector status
+```
+
+The inspector will start automatically when you log in (macOS) or boot (Linux), and restart if it crashes.
+
 ### CLI Commands
 
 | Command | Description |
@@ -129,6 +147,8 @@ oc-inspector restart
 | `providers` | List detected providers and their upstream URLs |
 | `config` | Show `.inspector.json` path and contents |
 | `logs` | Show daemon log output |
+| `install` | Install autostart — run inspector on login/boot |
+| `uninstall` | Remove autostart service |
 
 ### Examples
 
@@ -159,7 +179,7 @@ oc-inspector logs --lines 100
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--port <number>` | Port for the inspector proxy | `18800` |
+| `--port <number>` | Port for the inspector proxy | `3000` |
 | `--open` | Auto-open the dashboard in a browser | `false` |
 | `--config <path>` | Custom path to `openclaw.json` | `~/.openclaw/openclaw.json` |
 | `--json` | Output as JSON (for `stats`, `status`, `providers`, `history`, `pricing`) | `false` |
@@ -171,10 +191,10 @@ oc-inspector logs --lines 100
 
 ## How It Works
 
-1. **Start** — `oc-inspector` launches a background daemon with an HTTP reverse proxy on `localhost:18800`. The terminal is free immediately.
+1. **Start** — `oc-inspector` launches a background daemon with an HTTP reverse proxy on `localhost:3000`. The terminal is free immediately.
 2. **Enable** — Click **Enable** in the web UI (or run `oc-inspector enable`). This:
    - Backs up `openclaw.json`
-   - Rewrites each provider's `baseUrl` to route through `http://127.0.0.1:18800/{provider}/...`
+   - Rewrites each provider's `baseUrl` to route through `http://127.0.0.1:3000/{provider}/...`
    - Restarts the OpenClaw gateway
 3. **Intercept** — All LLM API traffic flows through the inspector:
    - Requests/responses are logged in real time

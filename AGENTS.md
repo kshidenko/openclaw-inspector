@@ -22,19 +22,19 @@ A transparent HTTP reverse proxy that sits between [OpenClaw](https://openclaw.a
 3. **Display** everything in a real-time web dashboard and CLI
 4. **Persist** daily usage history to disk
 
-It works by patching `~/.openclaw/openclaw.json` to route provider `baseUrl`s through `http://127.0.0.1:18800/{provider}/...`, then forwarding to the real upstream.
+It works by patching `~/.openclaw/openclaw.json` to route provider `baseUrl`s through `http://127.0.0.1:3000/{provider}/...`, then forwarding to the real upstream.
 
 ## Architecture Overview
 
 ```
-User → OpenClaw → Inspector Proxy (port 18800) → Real Provider API
+User → OpenClaw → Inspector Proxy (port 3000) → Real Provider API
                        ↕ WebSocket
                    Web Dashboard
 ```
 
 ### Request Flow
 
-1. OpenClaw sends request to `http://127.0.0.1:18800/{provider}/chat/completions`
+1. OpenClaw sends request to `http://127.0.0.1:3000/{provider}/chat/completions`
 2. `proxy.mjs` extracts provider name from URL, looks up real upstream in target map
 3. Request is forwarded to upstream with original headers (auth, content-type)
 4. Response is captured: buffered (JSON) or streamed (SSE)
@@ -140,7 +140,7 @@ src/ws.mjs           WebSocket server. initWebSocket(), broadcast(), client mana
 ```js
 {
   enabled: true,
-  port: 18800,
+  port: 3000,
   timestamp: "2026-02-06T...",
   originals: {
     "byteplus": { baseUrl: "https://ark.ap-southeast.bytepluses.com/api/v3", wasCustom: true },

@@ -145,7 +145,7 @@ export function restartGateway() {
  * @returns {{ ok: boolean, message: string, providers: string[] }}
  *
  * Example:
- *   >>> enable({ configPath: "~/.openclaw/openclaw.json", openclawDir: "~/.openclaw", port: 18800 })
+ *   >>> enable({ configPath: "~/.openclaw/openclaw.json", openclawDir: "~/.openclaw", port: 3000 })
  *   { ok: true, message: "Enabled 3 providers", providers: ["anthropic", "byteplus", "ollama"] }
  */
 export function enable({ configPath, openclawDir, port }) {
@@ -260,7 +260,7 @@ export function disable({ configPath, openclawDir }) {
       // Verify backup is clean (doesn't contain proxy URLs)
       try {
         const backupContent = readFileSync(backupPath, "utf-8");
-        if (!backupContent.includes("127.0.0.1:18800")) {
+        if (!backupContent.includes("127.0.0.1:3000")) {
           copyFileSync(backupPath, configPath);
           removeState(openclawDir);
           const restart = restartGateway();
@@ -331,7 +331,7 @@ function cleanProxyUrls(configPath) {
     let cleaned = false;
 
     for (const [name, cfg] of Object.entries(providers)) {
-      if (cfg.baseUrl && cfg.baseUrl.includes("127.0.0.1:18800")) {
+      if (cfg.baseUrl && cfg.baseUrl.includes("127.0.0.1:3000")) {
         if (BUILTIN_URLS[name]) {
           // Known provider — restore builtin URL
           cfg.baseUrl = BUILTIN_URLS[name];

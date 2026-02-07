@@ -21,7 +21,7 @@
  *   logs              Tail daemon log file
  *
  * Options:
- *   --port <number>   Port for the inspector proxy (default: 18800)
+ *   --port <number>   Port for the inspector proxy (default: 3000)
  *   --open            Auto-open the dashboard in a browser
  *   --config <path>   Custom path to openclaw.json
  *   --json            Output as JSON (for stats/status)
@@ -66,7 +66,7 @@ const LOG_FILE = join(INSPECTOR_DIR, "inspector.log");
 function parseArgs(argv) {
   const opts = {
     command: "start",
-    port: 18800,
+    port: 3000,
     open: false,
     config: undefined,
     json: false,
@@ -80,6 +80,7 @@ function parseArgs(argv) {
     "enable", "disable", "status",
     "stats", "providers", "history", "pricing", "config",
     "logs", "help", "_serve",
+    "install", "uninstall",
   ]);
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -124,9 +125,11 @@ if (opts.help) {
     pricing           Show model pricing table
     config            Show .inspector.json path and status
     logs              Show daemon log output
+    install           Install autostart (run on login/boot)
+    uninstall         Remove autostart service
 
   \x1b[1mOptions:\x1b[0m
-    --port <number>   Port for the inspector proxy (default: 18800)
+    --port <number>   Port for the inspector proxy (default: 3000)
     --open            Auto-open the dashboard in a browser
     --config <path>   Custom path to openclaw.json
     --json            Output as JSON (for stats, status, providers, history)
@@ -148,6 +151,8 @@ if (opts.help) {
     npx oc-inspector history --days 30 # Last 30 days
     npx oc-inspector pricing           # Show pricing table
     npx oc-inspector logs              # Show daemon logs
+    npx oc-inspector install           # Autostart on login/boot
+    npx oc-inspector uninstall         # Remove autostart
 `);
   process.exit(0);
 }
@@ -199,6 +204,12 @@ if (opts.command === "run") {
 // logs: show daemon log
 if (opts.command === "logs") {
   runLogs(opts);
+  process.exit(0);
+}
+
+// install / uninstall: autostart management
+if (opts.command === "install" || opts.command === "uninstall") {
+  await runAutostart(opts);
   process.exit(0);
 }
 
@@ -524,6 +535,49 @@ async function restoreConfigOnExit(cmdOpts = {}) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// Autostart (install / uninstall)
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Handle `install` and `uninstall` commands for system autostart.
+ *
+ * Uses launchd on macOS, systemd on Linux.
+ *
+ * @param {object} opts - Parsed CLI options.
+ */
+async function runAutostart(opts) {
+  const { install, uninstall, autostartStatus } = await import("../src/autostart.mjs");
+
+  console.log("");
+
+  if (opts.command === "install") {
+    const result = install({ port: opts.port, config: opts.config });
+    if (result.ok) {
+      console.log(`  \x1b[32m✓\x1b[0m ${result.message}`);
+      console.log(`  \x1b[90m  Service file: ${result.path}\x1b[0m`);
+      console.log("");
+      console.log("  Inspector will now start automatically on login.");
+      console.log("  Use \x1b[36moc-inspector uninstall\x1b[0m to remove.");
+    } else {
+      console.log(`  \x1b[31m✗\x1b[0m ${result.message}`);
+    }
+    console.log("");
+    return;
+  }
+
+  if (opts.command === "uninstall") {
+    const result = uninstall();
+    if (result.ok) {
+      console.log(`  \x1b[32m✓\x1b[0m ${result.message}`);
+    } else {
+      console.log(`  \x1b[31m✗\x1b[0m ${result.message}`);
+    }
+    console.log("");
+    return;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
 // Local commands (enable / disable / status)
 // ═══════════════════════════════════════════════════════════════
 
@@ -556,6 +610,17 @@ async function runLocalCommand(opts) {
         console.log(`    Port: ${st.port}`);
         console.log(`    Providers: ${st.providers.join(", ")}`);
       }
+
+      // Autostart status
+      try {
+        const { autostartStatus } = await import("../src/autostart.mjs");
+        const as = autostartStatus();
+        const asDot = as.installed ? "\x1b[32m●\x1b[0m" : "\x1b[90m●\x1b[0m";
+        const asLabel = as.installed
+          ? (as.running ? `\x1b[32minstalled & running\x1b[0m (${as.platform})` : `\x1b[33minstalled, not running\x1b[0m (${as.platform})`)
+          : `\x1b[90mnot installed\x1b[0m  \x1b[90m(use: oc-inspector install)\x1b[0m`;
+        console.log(`  ${asDot} Autostart:    ${asLabel}`);
+      } catch { /* autostart module not available */ }
 
       if (daemon.alive) {
         console.log(`\n  \x1b[90mDashboard: http://127.0.0.1:${st.port || opts.port}\x1b[0m`);
@@ -673,6 +738,8 @@ function printCommandsHelp() {
   console.log(`    ${C}oc-inspector providers${R}     Active providers list`);
   console.log(`    ${C}oc-inspector config${R}        Inspector config info`);
   console.log(`    ${C}oc-inspector logs${R}          Daemon log output`);
+  console.log(`    ${C}oc-inspector install${R}       Autostart on login/boot`);
+  console.log(`    ${C}oc-inspector uninstall${R}     Remove autostart`);
   console.log(`    ${C}oc-inspector help${R}          Show this help`);
   console.log("");
   console.log(`  ${D}Use --json for machine-readable output. See oc-inspector --help for all options.${R}`);
