@@ -30,7 +30,7 @@ import { initHistory, getRecent, getDay, listDates } from "./history.mjs";
  *   >>> const { url } = await startServer({ port: 3000 });
  *   >>> console.log("Inspector at", url);
  */
-export async function startServer({ port = 3000, configPath, open = false }) {
+export async function startServer({ port = 3000, host = "127.0.0.1", configPath, open = false }) {
   // Detect OpenClaw
   const oc = detect(configPath);
   if (!oc.exists) {
@@ -196,10 +196,11 @@ export async function startServer({ port = 3000, configPath, open = false }) {
   // Start listening
   await new Promise((resolve, reject) => {
     server.on("error", (err) => reject(err));
-    server.listen(port, "127.0.0.1", resolve);
+    server.listen(port, host, resolve);
   });
 
-  const url = `http://127.0.0.1:${port}`;
+  const listenAddr = host === "0.0.0.0" ? "127.0.0.1" : host;
+  const url = `http://${listenAddr}:${port}`;
 
   // Auto-open browser
   if (open) {

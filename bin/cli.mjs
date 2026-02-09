@@ -67,6 +67,7 @@ function parseArgs(argv) {
   const opts = {
     command: "start",
     port: 3000,
+    host: undefined,
     open: false,
     config: undefined,
     json: false,
@@ -86,6 +87,7 @@ function parseArgs(argv) {
     const arg = argv[i];
     if (commands.has(arg) && i === 0) { opts.command = arg; continue; }
     if (arg === "--port" && argv[i + 1]) { opts.port = parseInt(argv[++i], 10); continue; }
+    if (arg === "--host" && argv[i + 1]) { opts.host = argv[++i]; continue; }
     if (arg === "--open") { opts.open = true; continue; }
     if (arg === "--config" && argv[i + 1]) { opts.config = argv[++i]; continue; }
     if (arg === "--json") { opts.json = true; continue; }
@@ -457,6 +459,26 @@ function runLogs(opts) {
 // ═══════════════════════════════════════════════════════════════
 
 /**
+ * Resolve the host to bind to from CLI args or .inspector.json config.
+ *
+ * Priority: --host CLI arg > .inspector.json host > "127.0.0.1" default.
+ *
+ * @param {object} opts - Parsed CLI options.
+ * @returns {string} Host address to bind to.
+ */
+function resolveHost(opts) {
+  if (opts.host) return opts.host;
+  try {
+    const cfgPath = join(homedir(), ".openclaw", ".inspector.json");
+    if (existsSync(cfgPath)) {
+      const cfg = JSON.parse(readFileSync(cfgPath, "utf-8"));
+      if (cfg.host) return cfg.host;
+    }
+  } catch { /* ignore */ }
+  return "127.0.0.1";
+}
+
+/**
  * Hidden `_serve` command — runs the server in current process.
  * Called by the daemon spawn or can be used directly.
  *
@@ -464,6 +486,7 @@ function runLogs(opts) {
  */
 async function runServe(opts) {
   const { startServer } = await import("../src/server.mjs");
+  const host = resolveHost(opts);
 
   console.log("");
   console.log("  \x1b[38;5;208m🦞 OpenClaw Inspector\x1b[0m");
@@ -472,6 +495,7 @@ async function runServe(opts) {
   try {
     const { url, openclawDir } = await startServer({
       port: opts.port,
+      host,
       configPath: opts.config,
       open: opts.open,
     });
@@ -512,6 +536,7 @@ async function runServe(opts) {
  */
 async function runForeground(opts) {
   const { startServer } = await import("../src/server.mjs");
+  const host = resolveHost(opts);
 
   console.log("");
   console.log("  \x1b[38;5;208m🦞 OpenClaw Inspector\x1b[0m  \x1b[90m(foreground)\x1b[0m");
@@ -520,6 +545,7 @@ async function runForeground(opts) {
   try {
     const { url, openclawDir } = await startServer({
       port: opts.port,
+      host,
       configPath: opts.config,
       open: opts.open,
     });
