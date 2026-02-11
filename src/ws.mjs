@@ -30,9 +30,10 @@ export function initWebSocket(httpServer) {
   wss.on("connection", (ws) => {
     clients.add(ws);
 
-    // Send existing entries on connect
+    // Send existing entries on connect (getAllEntries returns newest-first,
+    // which matches dashboard appendChild order: first sent = top of list)
     const existing = getAllEntries();
-    for (const entry of existing.reverse()) {
+    for (const entry of existing) {
       sendTo(ws, { type: "init", entry: summarize(entry) });
     }
     sendTo(ws, { type: "ready", count: existing.length });
@@ -130,6 +131,7 @@ function summarize(entry) {
     duration: entry.duration,
     model: entry.usage?.model || entry.reqModel || "?",
     usage: entry.usage || null,
+    cost: entry.cost || 0,
   };
 }
 

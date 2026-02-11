@@ -186,6 +186,15 @@ export function updateTargets(targets) {
 }
 
 /**
+ * Get the current target map.
+ *
+ * @returns {Map<string, string>}
+ */
+export function getTargets() {
+  return targetMap;
+}
+
+/**
  * Build a summary of an entry suitable for list view (no full bodies).
  *
  * @param {object} entry
