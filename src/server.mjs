@@ -10,7 +10,7 @@
 import http from "node:http";
 import { execSync } from "node:child_process";
 import { renderDashboard } from "./dashboard.mjs";
-import { initProxy, handleProxy, updateTargets, clearEntries, getStats } from "./proxy.mjs";
+import { initProxy, handleProxy, updateTargets, getTargets, clearEntries, getStats } from "./proxy.mjs";
 import { initWebSocket, broadcast } from "./ws.mjs";
 import { detect, readConfig, enable, disable, status } from "./config.mjs";
 import { buildTargetMap, BUILTIN_URLS } from "./providers.mjs";
@@ -160,7 +160,8 @@ export async function startServer({ port = 3000, host = "127.0.0.1", configPath,
     // API: providers (current target map)
     if (url === "/api/providers" && req.method === "GET") {
       const list = [];
-      for (const [name, targetUrl] of targets) {
+      const currentTargets = getTargets();
+      for (const [name, targetUrl] of currentTargets) {
         list.push({ name, url: targetUrl });
       }
       jsonResponse(res, 200, { providers: list });
@@ -170,7 +171,7 @@ export async function startServer({ port = 3000, host = "127.0.0.1", configPath,
     // Proxy: /{provider}/{path}
     const firstSlash = url.indexOf("/", 1);
     const providerName = firstSlash > 0 ? url.slice(1, firstSlash) : url.slice(1);
-    if (targets.has(providerName)) {
+    if (getTargets().has(providerName)) {
       await handleProxy(req, res);
       return;
     }
